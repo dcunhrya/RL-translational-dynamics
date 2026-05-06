@@ -51,34 +51,7 @@ Correct separation:
 
 Never place `modal.App`, Modal images, Modal secrets, Modal volumes, or Modal remote decorators inside core RL logic files.
 
-### Rule 2: Algorithmic Handoff Protocol
-
-Any code that transitions from SAC to PPO must strictly implement the following sequence. Do not reorder, skip, or soften these steps.
-
-1. Transfer the SAC actor weights into the PPO actor.
-2. Initialize a fresh PPO value network. Do not transfer SAC critic weights into the PPO value function unless the user explicitly requests a controlled ablation.
-3. Perform a mandatory value warm-up phase:
-   - Freeze the transferred actor.
-   - Roll out trajectories with the frozen actor.
-   - Train only the PPO value network.
-   - Continue until value loss stabilizes according to an explicit criterion or configured warm-up budget.
-4. Unfreeze the actor.
-5. Reset all optimizer states and momentums before beginning PPO updates.
-6. Begin PPO training with fresh optimizer dynamics and explicit logging of the handoff boundary.
-
-The warm-up phase is mandatory because the transferred actor induces a state-action distribution that the fresh PPO value function must learn before policy updates begin. Skipping this phase risks unstable advantages, destructive policy gradients, and catastrophic forgetting.
-
-Any implementation of this protocol must make the handoff state visible in code and logs. There must be explicit markers for:
-
-- SAC pretraining phase.
-- Actor transfer event.
-- PPO value warm-up start.
-- PPO value warm-up completion.
-- Actor unfreeze event.
-- Optimizer reset event.
-- PPO joint actor-value update start.
-
-### Rule 3: High-Fidelity Logging
+### Rule 2: High-Fidelity Logging
 
 `wandb` logging must go beyond episodic reward. Episodic return alone is insufficient for this project.
 
