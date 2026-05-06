@@ -35,7 +35,7 @@ for algorithm in "${ALGORITHMS[@]}"; do
   for env_id in "${ENVS[@]}"; do
     for seed in "${SEEDS[@]}"; do
       echo "Running ${algorithm} on ${env_id}, seed ${seed}, ${TOTAL_TIMESTEPS} steps"
-      uv run python "src/train_${algorithm}.py" \
+      uv run python "src/RL-translational-dynamics/exp0/train_${algorithm}.py" \
         --env-id "$env_id" \
         --seed "$seed" \
         --total-timesteps "$TOTAL_TIMESTEPS" \

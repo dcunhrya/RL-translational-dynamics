@@ -6,8 +6,34 @@ import modal
 
 
 APP_NAME = "rl-translational-dynamics-experiment-0"
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WANDB_SECRET_NAME = os.environ.get("WANDB_MODAL_SECRET", "wandb-api-key")
+TRAINING_REL_DIR = Path("src") / "RL-translational-dynamics" / "exp0"
+REMOTE_TRAINING_DIR = Path("/root/project/exp0")
+
+
+def find_training_source_dir() -> Path:
+    override = os.environ.get("TRAINING_SOURCE_DIR") or os.environ.get("PROJECT_ROOT")
+    if override:
+        path = Path(override).expanduser().resolve()
+        if path.name == "exp0" and (path / "train_sac.py").exists():
+            return path
+        if (path / TRAINING_REL_DIR / "train_sac.py").exists():
+            return path / TRAINING_REL_DIR
+        raise FileNotFoundError(f"Override does not contain train_sac.py or {TRAINING_REL_DIR / 'train_sac.py'}: {path}")
+
+    if (REMOTE_TRAINING_DIR / "train_sac.py").exists():
+        return REMOTE_TRAINING_DIR
+
+    candidates = [Path.cwd().resolve()]
+    candidates.extend(Path(__file__).resolve().parents)
+    for candidate in candidates:
+        training_dir = candidate / TRAINING_REL_DIR
+        if (training_dir / "train_sac.py").exists():
+            return training_dir
+    raise FileNotFoundError(f"Could not locate {TRAINING_REL_DIR / 'train_sac.py'}")
+
+
+TRAINING_SOURCE_DIR = find_training_source_dir()
 
 app = modal.App(APP_NAME)
 
@@ -20,7 +46,7 @@ image = (
         "wandb",
         "numpy",
     )
-    .add_local_dir(PROJECT_ROOT / "src", remote_path="/root/project/src")
+    .add_local_dir(TRAINING_SOURCE_DIR, remote_path=str(REMOTE_TRAINING_DIR))
 )
 
 
@@ -50,7 +76,7 @@ def run_training(
 
     command = [
         "python",
-        f"/root/project/src/train_{algorithm}.py",
+        f"/root/project/exp0/train_{algorithm}.py",
         "--env-id",
         env_id,
         "--seed",
