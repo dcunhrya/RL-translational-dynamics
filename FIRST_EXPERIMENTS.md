@@ -30,6 +30,30 @@ Exit criteria:
 - both SAC and PPO improve reward on Hopper with at least 2 seeds
 - no recurring crashes in rollout or training loops
 
+Result summary as of 2026-05-18:
+
+- Status:
+  - completed for `Hopper-v4`, `Walker2d-v4`, `HalfCheetah-v4`, and `Ant-v4`
+  - `2` seeds each for `SAC` and `PPO`
+  - `100k` env steps per run
+  - W&B logging enabled for all runs
+- Outcome:
+  - experiment gate passed
+  - no recurring crashes or NaN failures
+  - both `SAC` and `PPO` improved on `Hopper-v4` across both seeds
+- Final eval return mean +/- std across 2 seeds:
+  - `Hopper-v4`: `SAC 1204.24 +/- 795.57`, `PPO 346.23 +/- 15.37`
+  - `Walker2d-v4`: `SAC 326.17 +/- 44.50`, `PPO 339.01 +/- 33.65`
+  - `HalfCheetah-v4`: `SAC 4830.85 +/- 1075.63`, `PPO 275.69 +/- 26.16`
+  - `Ant-v4`: `SAC 1152.57 +/- 307.84`, `PPO 448.39 +/- 92.06`
+- Takeaway:
+  - at this short horizon, `SAC` is clearly stronger on `Hopper-v4`, `HalfCheetah-v4`, and `Ant-v4`
+  - `Walker2d-v4` is roughly tied, with a small edge to `PPO`
+  - this supports using `SAC` as the stronger early-training baseline before testing `SAC -> PPO` handoff schedules
+- Artifacts:
+  - averaged learning curves: `results/processed/experiment_0/sac_vs_ppo_learning_curves.png`
+  - averaged final-return comparison: `results/processed/experiment_0/sac_vs_ppo_final_returns.png`
+
 ## Experiment 1: Baseline Curves (Core Reference)
 
 Purpose: create the baseline that all switching methods must beat.

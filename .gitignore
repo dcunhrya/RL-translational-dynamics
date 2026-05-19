@@ -7,3 +7,7 @@
 # pycache
 **/__pycache__/
 *.py[cod]
+
+# experiment artifacts
+wandb/
+results/
