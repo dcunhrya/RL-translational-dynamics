@@ -18,6 +18,7 @@ TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-100000}"
 EVAL_INTERVAL="${EVAL_INTERVAL:-5000}"
 NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-5}"
 TRACK="${TRACK:-false}"
+WANDB_GROUP_PREFIX="${WANDB_GROUP_PREFIX:-experiment_0}"
 
 ENVS=(${ENVS:-Hopper-v4 Walker2d-v4})
 SEEDS=(${SEEDS:-0 1})
@@ -33,8 +34,9 @@ export WANDB_MODE
 
 for algorithm in "${ALGORITHMS[@]}"; do
   for env_id in "${ENVS[@]}"; do
+    wandb_group="${WANDB_GROUP_PREFIX}__${algorithm}__${env_id}"
     for seed in "${SEEDS[@]}"; do
-      echo "Running ${algorithm} on ${env_id}, seed ${seed}, ${TOTAL_TIMESTEPS} steps"
+      echo "Running ${algorithm} on ${env_id}, seed ${seed}, group ${wandb_group}, ${TOTAL_TIMESTEPS} steps"
       uv run python "src/RL-translational-dynamics/exp0/train_${algorithm}.py" \
         --env-id "$env_id" \
         --seed "$seed" \
@@ -43,6 +45,7 @@ for algorithm in "${ALGORITHMS[@]}"; do
         --num-eval-episodes "$NUM_EVAL_EPISODES" \
         --save-dir "$SAVE_DIR" \
         --wandb-project "$WANDB_PROJECT" \
+        --wandb-group "$wandb_group" \
         "$track_flag"
     done
   done

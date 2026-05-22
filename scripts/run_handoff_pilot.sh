@@ -20,6 +20,7 @@ NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-5}"
 TRACK="${TRACK:-false}"
 VALUE_WARMUP_UPDATES="${VALUE_WARMUP_UPDATES:-2}"
 DISTILL_STEPS="${DISTILL_STEPS:-500}"
+WANDB_GROUP_PREFIX="${WANDB_GROUP_PREFIX:-experiment_2_fixed_handoff}"
 
 ENVS=(${ENVS:-Hopper-v4 Walker2d-v4})
 SEEDS=(${SEEDS:-0 1 2})
@@ -34,9 +35,15 @@ export WANDB_PROJECT
 export WANDB_MODE
 
 for switch_fraction in "${SWITCH_FRACTIONS[@]}"; do
+  switch_pct="$(python - <<PY
+switch_fraction = float("${switch_fraction}")
+print(int(round(switch_fraction * 100)))
+PY
+)"
   for env_id in "${ENVS[@]}"; do
+    wandb_group="${WANDB_GROUP_PREFIX}__${env_id}__switch_${switch_pct}pct"
     for seed in "${SEEDS[@]}"; do
-      echo "Running SAC->PPO on ${env_id}, seed ${seed}, switch_fraction ${switch_fraction}, ${TOTAL_TIMESTEPS} steps"
+      echo "Running SAC->PPO on ${env_id}, seed ${seed}, switch_fraction ${switch_fraction}, group ${wandb_group}, ${TOTAL_TIMESTEPS} steps"
       uv run python "src/RL-translational-dynamics/exp0/train_handoff.py" \
         --env-id "$env_id" \
         --seed "$seed" \
@@ -46,6 +53,7 @@ for switch_fraction in "${SWITCH_FRACTIONS[@]}"; do
         --num-eval-episodes "$NUM_EVAL_EPISODES" \
         --save-dir "$SAVE_DIR" \
         --wandb-project "$WANDB_PROJECT" \
+        --wandb-group "$wandb_group" \
         --value-warmup-updates "$VALUE_WARMUP_UPDATES" \
         --distill-steps "$DISTILL_STEPS" \
         "$track_flag"

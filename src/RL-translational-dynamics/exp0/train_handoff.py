@@ -163,7 +163,10 @@ def main() -> None:
 
     switch_step = int(args.total_timesteps * args.switch_fraction)
     switch_step = min(max(1, switch_step), args.total_timesteps - 1)
-    run_name = f"handoff__{args.env_id}__seed_{args.seed}__switch_{switch_step}__{int(time.time())}"
+    switch_pct = int(round(args.switch_fraction * 100))
+    env_slug = args.env_id.replace("-v", "_v").replace("-", "_")
+    horizon_k = int(args.total_timesteps / 1000)
+    run_name = f"handoff__{env_slug}__switch_{switch_pct}pct__seed_{args.seed}__{horizon_k}k__{int(time.time())}"
     save_dir = Path(args.save_dir) / run_name
     save_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = save_dir / "metrics.jsonl"
@@ -179,9 +182,11 @@ def main() -> None:
             project=args.wandb_project,
             entity=args.wandb_entity,
             group=args.wandb_group,
+            job_type="fixed_handoff",
             name=run_name,
             config=asdict(args),
             save_code=True,
+            tags=["experiment_2", "fixed_handoff", args.env_id, f"switch_{switch_pct}pct"],
         )
 
     env = make_env(args.env_id, args.seed, args.capture_video, run_name)
