@@ -7,8 +7,10 @@ import modal
 
 APP_NAME = "rl-translational-dynamics-experiment-0"
 WANDB_SECRET_NAME = os.environ.get("WANDB_MODAL_SECRET", "wandb-api-key")
+RESULTS_VOLUME_NAME = os.environ.get("MODAL_RESULTS_VOLUME", "herschethan")
 TRAINING_REL_DIR = Path("src") / "RL-translational-dynamics" / "exp0"
 REMOTE_TRAINING_DIR = Path("/root/project/exp0")
+REMOTE_RESULTS_DIR = Path("/root/results")
 
 
 def find_training_source_dir() -> Path:
@@ -36,6 +38,7 @@ def find_training_source_dir() -> Path:
 TRAINING_SOURCE_DIR = find_training_source_dir()
 
 app = modal.App(APP_NAME)
+results_volume = modal.Volume.from_name(RESULTS_VOLUME_NAME, create_if_missing=True)
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -53,6 +56,7 @@ image = (
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name(WANDB_SECRET_NAME)],
+    volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 6,
     cpu=4.0,
     memory=8192,
@@ -64,7 +68,7 @@ def run_training(
     total_timesteps: int = 100_000,
     eval_interval: int = 5_000,
     num_eval_episodes: int = 5,
-    save_dir: str = "/root/results/raw/experiment_0",
+    save_dir: str = str(REMOTE_RESULTS_DIR / "raw" / "experiment_0"),
     wandb_project: str = "rl-translational-dynamics",
     wandb_group: str = "experiment_0",
 ) -> None:
