@@ -1,0 +1,75 @@
+\documentclass[10pt]{article}
+\usepackage[margin=0.58in]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{amsmath}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{1.5pt}
+\setlist[itemize]{leftmargin=*, itemsep=1pt, topsep=2pt}
+\titlespacing*{\section}{0pt}{4pt}{2pt}
+\titleformat{\section}{\bfseries\normalsize}{}{0em}{}
+
+\begin{document}
+
+\begin{center}
+    {\Large \textbf{CS 224R Project Milestone Update}}\\[-1pt]
+    {\normalsize \textbf{Algorithm Sequencing in Deep Reinforcement Learning}}\\[-1pt]
+    Ethan Hersch \quad Ryan D'Cunha \quad Abhinav Chinta
+\end{center}
+\small
+
+\section*{Project objective and current status}
+Our project asks whether explicitly sequencing RL algorithms improves sample efficiency, stability, or final return under matched budgets. The proposal emphasized SAC$\rightarrow$PPO plus broader sequences (BC/IQL/AWAC initialization followed by online RL). For the milestone, we implemented and validated MuJoCo handoff pipelines for SAC$\rightarrow$PPO and PPO$\rightarrow$SAC to establish a reliable baseline before expanding algorithm families.
+
+\section*{Experiments conducted so far}
+\textbf{Experiment 0: sanity and reproducibility baselines.} We ran SAC and PPO for 100k steps on Hopper-v4, Walker2d-v4, HalfCheetah-v4, and Ant-v4 (2 seeds), using Modal orchestration and W\&B logging. This gate passed: no recurring NaNs/crashes, complete logs, and expected learning behavior. SAC was stronger on Hopper/HalfCheetah/Ant, while Walker2d was near-tied.
+
+\textbf{Experiments 2 and 3: fixed handoff pilots.} We tested fixed switch fractions $f\in\{0.25,0.50,0.75\}$ on Hopper-v4 and Walker2d-v4 (3 seeds), for both SAC$\rightarrow$PPO and PPO$\rightarrow$SAC.
+
+\begin{center}
+    \small
+    \begin{tabular}{lcc}
+        \toprule
+        Setting (100k steps)     & Hopper-v4 final return         & Walker2d-v4 final return       \\
+        \midrule
+        SAC baseline             & $1204.24 \pm 795.57$           & $326.17 \pm 44.50$             \\
+        PPO baseline             & $346.23 \pm 15.37$             & $339.01 \pm 33.65$             \\
+        Best SAC$\rightarrow$PPO & $735.27 \pm 251.71$ ($f=0.75$) & $513.48 \pm 86.63$ ($f=0.50$)  \\
+        Best PPO$\rightarrow$SAC & $754.55 \pm 374.10$ ($f=0.25$) & $566.35 \pm 126.00$ ($f=0.25$) \\
+        \bottomrule
+    \end{tabular}
+\end{center}
+
+These results are mixed but informative: handoffs often outperform pure PPO, but pure SAC remains strongest on Hopper at this horizon. Ordering clearly matters, and early PPO$\rightarrow$SAC was stronger than expected, indicating switch direction and post-switch budget are critical.
+
+\section*{Did results match expectations?}
+Partially. We expected handoff timing and ordering to matter, and the pilots support that. We also expected SAC$\rightarrow$PPO to be consistently strongest from the proposal intuition, but under a 100k-step budget, early PPO$\rightarrow$SAC often performed better than expected. A likely reason is that SAC contributes more when it receives most of the post-transfer budget, while fixed switches can leave too little time for the second phase to fully refine policy behavior.
+
+\section*{Changes to hypothesis or objective}
+The research objective is \textbf{unchanged}: determine when algorithm sequencing improves learning under fixed budgets. We no longer assume any fixed short-horizon handoff will beat the strongest single baseline. Our refined hypothesis is that benefits depend on timing, ordering, transfer mechanism, and environment. Initial findings support this direction because we already observe nontrivial transition effects (sensitivity to switch fraction and reverse-order improvements), not a null result.
+
+\section*{Steps needed for completion}
+\begin{itemize}
+    \item Expand seed coverage (5--10 seeds) for SAC, PPO, SAC$\rightarrow$PPO, and PPO$\rightarrow$SAC to stabilize variance.
+    \item Diversify algorithms to probe broader behavior: add IQL, AWAC, and BC with expert demonstrations as baselines and/or first-stage policies before online fine-tuning.
+    \item Evaluate transfer variants: within-environment cross-algorithm transfer, cross-environment transfer (policy from one environment to another), and warm-starting from clipped/smaller environment versions.
+    \item Implement adaptive switching (KL-drift trigger) and compare with best fixed-fraction schedules under matched budgets.
+    \item Run compute-normalized comparisons (returns vs gradient updates/wall-clock proxy), then finalize learning-curve, AUC, and final-return analyses.
+    \item Meet with TA for feedback on narrowing the above into one cohesive final narrative and strongest ablation set.
+\end{itemize}
+
+This scope is realistic because the training/logging/switching stack already works end-to-end. The main risk is over-scoping across too many algorithms and transfer variants. Mitigation: run quick pilots, prune to top/most-diagnostic settings, and focus full-seed runs on a narrow, defensible story.
+
+Note, we would appreciate any feedback on this milestone which can help us formulate a more cohesive story. If there are other experiments we should do, certain experiments we should focus more on, or a single theme we should emphasize, we would appreciate this guidance.
+
+\section*{Team contributions}
+\textbf{Completed so far:} Ethan and Ryan ran PPO/SAC handoff experiments and baseline comparisons. Abhinav set up Modal and W\&B infrastructure. All three members jointly interpreted results and brainstormed next-step designs.
+
+\textbf{Planned remaining work:} Ethan and Ryan will run IQL/AWAC/BC and transfer-learning experiments plus expanded seed sweeps; Abhinav will support orchestration, logging robustness, and run management; all members will synthesize results into a cohesive final report/poster narrative.
+
+\end{document}
