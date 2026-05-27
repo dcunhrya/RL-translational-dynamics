@@ -24,6 +24,9 @@ LONG_HORIZON_STEPS = 1_000_000
 
 
 def find_source_dir() -> Path:
+    if (REMOTE_SRC_DIR / "exp2" / "train_handoff.py").exists():
+        return REMOTE_SRC_DIR
+
     override = os.environ.get("PROJECT_ROOT")
     if override:
         path = Path(override).expanduser().resolve()
