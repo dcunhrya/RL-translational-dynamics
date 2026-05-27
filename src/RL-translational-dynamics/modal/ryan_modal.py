@@ -367,6 +367,7 @@ def main(
     num_eval_episodes: int = 5,
     wandb_project: str = "rl-translational-dynamics",
     manifest_path: str = "experiments/ryan_modal_manifest.json",
+    keep_alive_minutes: int = 720,
 ) -> None:
     if mode not in {"smoke", "full"}:
         raise ValueError("mode must be 'smoke' or 'full'.")
@@ -386,3 +387,10 @@ def main(
         for call in calls:
             call.get()
         print("Ryan Modal smoke jobs completed successfully.")
+        return
+
+    print("Ryan full jobs are running on Modal; keeping the app alive.")
+    print("RYAN_FULL_JOBS_RUNNING")
+    deadline = time.time() + keep_alive_minutes * 60
+    while time.time() < deadline:
+        time.sleep(60)
