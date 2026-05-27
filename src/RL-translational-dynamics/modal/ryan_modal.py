@@ -336,7 +336,7 @@ def spawn_specs(
 
 
 def spawn_job(spec: dict):
-    kwargs = {key: value for key, value in spec.items() if key != "kind"}
+    kwargs = {key: value for key, value in spec.items() if key not in {"kind", "modal_call_id"}}
     if spec["kind"] == "sac":
         return run_sac.spawn(**kwargs)
     if spec["kind"] == "ppo":
@@ -367,14 +367,43 @@ def main(
     num_eval_episodes: int = 5,
     wandb_project: str = "rl-translational-dynamics",
     manifest_path: str = "experiments/ryan_modal_manifest.json",
+    job_specs_path: str = "",
+    batch_size: int = 10,
     keep_alive_minutes: int = 720,
 ) -> None:
-    if mode not in {"smoke", "full"}:
-        raise ValueError("mode must be 'smoke' or 'full'.")
+    if mode not in {"smoke", "full", "requeue"}:
+        raise ValueError("mode must be 'smoke', 'full', or 'requeue'.")
+    if batch_size < 1 or batch_size > 10:
+        raise ValueError("batch_size must be in [1, 10] to respect the Modal GPU cap.")
 
     rows = []
     calls = []
-    for spec in spawn_specs(mode, total_timesteps, eval_interval, num_eval_episodes, wandb_project):
+    if mode == "requeue":
+        if not job_specs_path:
+            raise ValueError("requeue mode requires --job-specs-path.")
+        payload = json.loads(Path(job_specs_path).read_text(encoding="utf-8"))
+        specs = payload["missing_specs"] if isinstance(payload, dict) and "missing_specs" in payload else payload
+    else:
+        specs = spawn_specs(mode, total_timesteps, eval_interval, num_eval_episodes, wandb_project)
+
+    if mode == "requeue":
+        for start in range(0, len(specs), batch_size):
+            batch_specs = specs[start : start + batch_size]
+            batch_calls = []
+            print(f"Spawning batch {start // batch_size + 1} with {len(batch_specs)} jobs.")
+            for spec in batch_specs:
+                call = spawn_job(spec)
+                rows.append({**spec, "modal_call_id": call_id(call)})
+                batch_calls.append(call)
+            write_manifest(Path(manifest_path), mode, rows)
+            print(f"Waiting for batch {start // batch_size + 1} with {len(batch_calls)} jobs.")
+            for call in batch_calls:
+                call.get()
+        write_manifest(Path(manifest_path), mode, rows)
+        print(f"Ryan Modal requeue jobs completed successfully. Wrote manifest to {manifest_path}.")
+        return
+
+    for spec in specs:
         call = spawn_job(spec)
         rows.append({**spec, "modal_call_id": call_id(call)})
         calls.append(call)
@@ -384,8 +413,11 @@ def main(
     print(f"Wrote manifest to {manifest_path}.")
 
     if mode == "smoke":
-        for call in calls:
-            call.get()
+        for start in range(0, len(calls), batch_size):
+            batch = calls[start : start + batch_size]
+            print(f"Waiting for batch {start // batch_size + 1} with {len(batch)} jobs.")
+            for call in batch:
+                call.get()
         print("Ryan Modal smoke jobs completed successfully.")
         return
 
