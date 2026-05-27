@@ -1,146 +1,203 @@
 # Design — What Transfers In Algorithm Sequencing
 
-**Date:** 2026-05-26
-**Status:** Draft (pending user review)
+**Date:** 2026-05-26 (revised after Ryan + Ethan critiques)
+**Status:** Draft v2 (pending user review)
 **Project:** RL Translational Dynamics (CS 224R)
 
 ## Context
 
-The CS 224R project has so far benchmarked pure `SAC`, pure `PPO`, and fixed-fraction `SAC -> PPO` / `PPO -> SAC` handoffs at 100k env steps on Hopper-v4, Walker2d-v4, HalfCheetah-v4, and Ant-v4. The milestone-level takeaway is descriptive: at 100k steps `SAC` dominates `PPO` on 3/4 envs, and any schedule that allocates more budget to `SAC` does well. That is not a mechanism — it is the relative quality of the two algorithms at this horizon plus a budget tautology.
+The CS 224R project has benchmarked pure `SAC`, pure `PPO`, and fixed-fraction `SAC -> PPO` / `PPO -> SAC` handoffs at 100k env steps on Hopper-v4, Walker2d-v4, HalfCheetah-v4, Ant-v4. The milestone-level takeaway is descriptive: at 100k steps `SAC` dominates `PPO` on 3/4 envs, and any schedule that allocates more budget to `SAC` does well. That is not a mechanism — it is the relative quality of the two algorithms at this horizon plus a budget tautology.
 
 The remaining time budget is ~2 days of execution, with parallel subagent implementation, 2x RTX 3090s, and ~$500 of Modal credit.
 
+**Contribution posture (decided 2026-05-26):** the deliverable is *understanding*, not a leaderboard. We are not trying to show "our schedule beats the baselines." We are trying to *explain why* sequencing helps when it helps and fails when it fails. This posture narrows scope: every variant we add must earn its place by sharpening the explanation, because each variant needs its own diagnostic suite, and diagnostics are where the time goes. Depth wins ties over breadth.
+
 ## Headline Claim (Narrative Spine)
 
-> In algorithm sequencing, the *transferable substrate* — policy weights, value function, replay buffer — determines the magnitude and direction of benefit. The same decomposition explains both online-online (SAC <-> PPO) and offline-online (BC / IQL -> SAC / PPO) sequencing.
+**Framing wrapper (accessible):** RL algorithms can be viewed as *training phases* with complementary strengths — exploration, stabilization, refinement. Sequencing chains them.
 
-This is a "mechanism + generalization" claim: a mechanistic explanation of when and why sequencing helps, validated across multiple algorithm families.
+**Primary claim (the thesis — mechanistic):**
 
-## Falsifiable Sub-Claims
+> What carries across a phase boundary — the policy, the value function, or the data distribution — determines whether sequencing helps, by how much, and in which direction. We decompose the boundary into transferable substrates and show the *same* decomposition explains online↔online (SAC↔PPO) and offline→online (BC / IQL|AWAC → SAC / PPO) sequencing.
 
-- **C1 — policy is necessary but not sufficient.** For `SAC <-> PPO`, transferring the policy alone (with random-init target value) underperforms transferring policy + value. If `policy` and `policy + value` ablations are statistically indistinguishable, C1 is rejected.
-- **C2 — BC -> PPO underperforms BC -> SAC, because BC carries no value.** PPO depends on advantage estimates from a warm value; BC provides only a policy prior. Therefore `BC -> PPO` should rapidly drift away from the BC policy as GAE drives updates, while `BC -> SAC` benefits from the policy prior even with a random Q init (SAC bootstraps Q from scratch anyway).
-- **C3 — IQL closes the value-transfer gap.** IQL produces an offline policy and value function. `IQL -> PPO` should outperform `BC -> PPO` at matched online compute, and the gap should be attributable to the transferred value function (cf. AWAC / IQL prior work).
+Performance curves are *evidence for the mechanism*, not the headline. This framing is deliberately robust to the likely result that pure SAC often wins on final return: "SAC wins" becomes a data point the mechanism explains, not a refutation of the thesis.
 
-**Pre-committed falsification clause.** If all transfer variants are statistically indistinguishable at the experimental horizons, we report a clean negative result: at fixed budgets in this regime, transfer substrate does not dominate seed variance, and we characterize *why* (e.g., variance washes the signal, or warm-ups are reabsorbed within the first 10% of online updates).
+**Why mechanism-first over a performance headline (recorded rationale):** (1) the existing data won't support "sequencing wins" — SAC beats most schedules at 100k; a performance headline is fragile against our own results. (2) An explanation-first result lives on diagnostic quality, which we control regardless of the leaderboard.
 
-## Experimental Matrix
+## Ground Truth — What the Handoff Code Actually Does
 
-10 variants. Each at 500k env steps on Hopper-v4 and Walker2d-v4, 5 seeds. Switch fraction held at **50%** for all online-online variants to isolate transfer substrate as the only variable. Total: **100 runs** in the main matrix.
+*(This section exists because the v1 spec mis-described the pipeline. Verified against `train_handoff.py` / `train_reverse_handoff.py` on 2026-05-26.)*
 
-| #  | Source | Target | What's transferred | Tests |
-|----|--------|--------|--------------------|-------|
-| 1  | —      | SAC    | —                                                 | baseline |
-| 2  | —      | PPO    | —                                                 | baseline |
-| 3  | SAC    | PPO    | policy only (V_phi random init)                   | **C1**   |
-| 4  | SAC    | PPO    | policy + value (V_phi warm-up from Q_SAC)         | **C1**   |
-| 5  | PPO    | SAC    | policy only (Q_theta random init)                 | **C1**   |
-| 6  | PPO    | SAC    | policy + value (Q_theta warm-up from V_PPO)       | **C1**   |
-| 7  | BC     | SAC    | policy only (no value available)                  | **C2**   |
-| 8  | BC     | PPO    | policy only (no value available)                  | **C2**   |
-| 9  | IQL    | SAC    | policy + value (Q_theta <- Q_IQL)                 | **C3**   |
-| 10 | IQL    | PPO    | policy + value (V_phi <- V_IQL)                   | **C3**   |
+**SAC→PPO (`train_handoff.py`):**
+1. Train SAC to `switch_step`.
+2. PPO actor is **fresh random init** — never weight-copied (architectures differ; see below).
+3. **500 steps of behavioral distillation**: MSE between PPO action-mean and SAC *deterministic* actions on replay states (`distill_steps=500`, `distill_lr=1e-3`).
+4. **Value warm-up = 2 PPO rollout-iterations, critic-only** (`value_warmup_updates=2`). Critically, V is fit to **PPO's own fresh GAE returns**, *not* to SAC's Q.
+5. Full PPO with a fresh optimizer (optimizer reset logged).
 
-### Headline 1M-step comparison (Hopper-v4)
+**PPO→SAC (`train_reverse_handoff.py`):**
+1. Train PPO to `switch_step`, adding every transition to a replay buffer as a side effect.
+2. SAC actor fresh random init → **500-step distillation** toward PPO deterministic actions.
+3. **1000 Bellman critic-warm-up steps** on the replay buffer (`sac_critic_warmup_updates=1000`).
+4. Full SAC.
 
-5 representative variants × 5 seeds = **25 long runs**. The variants are: pure SAC, pure PPO, best SAC <-> PPO from C1, BC -> SAC, IQL -> SAC (or BC -> SAC if C3 is dropped). This is the "does PPO catch up asymptotically?" headline answer.
+**Architectures (incompatible — this is why the code distills):**
+- SAC actor: 256×256 ReLU, **state-dependent** `fc_mean` + `fc_logstd` heads.
+- PPO actor: 64×64 Tanh, **state-independent** `actor_logstd` `nn.Parameter`.
+- There is no shared `MLPGaussian` class. Direct weight loading between actors is impossible.
 
-### Compute accounting
+**Consequence for the design:** "policy transfer" in this codebase *is behavioral distillation*, and the existing value warm-up is *self-supervised from the target's own returns*. The v1 C1 ("policy-only vs policy+value with value aligned to the source") did not map onto the code. v2 reframes C1 as a factored ablation that holds distillation fixed and varies the value substrate — testable on the existing pipeline.
 
-Online compute is reported in env steps and gradient updates. BC and IQL pretraining is treated as offline pre-processing on D4RL Gym-MuJoCo `*-expert-v2` datasets (expert policy rollouts, not human demonstrations). The report will be transparent about this convention.
+## Transfer-Substrate Vocabulary (name every arm by its operation)
 
-### Switch direction and target representations
+Each experimental arm is a point in a factor space. No arm is labeled with an ambiguous term like "policy+value."
 
-Value transfer between SAC (Q-function) and PPO (V-function) is non-trivial because their value representations differ. Cleanest approach: at the handoff, run a short supervised warm-up phase (~5k gradient updates) that aligns the target value function to the source's. For SAC -> PPO, train V_phi on `E_{a ~ pi}[Q_SAC(s, a)]` over states drawn from SAC's replay. For PPO -> SAC, train Q_theta on `V_PPO(s) + r(s, a)` over PPO's rollout buffer. The warm-up phase is logged explicitly (`ppo_value_warmup` per RULES.md) and counted toward the online gradient-update budget.
+- **Policy init:** `random` | `distill` (500-step action-MSE toward a source policy) | `weight-load` (only when architectures match).
+- **Value init:** `random` | `self-warmup` (target fits its own returns: 2 PPO critic iters, or 1000 SAC Bellman steps — the *current* protocol) | `source-aligned` (target value regressed toward a transformed source value; precise target defined per direction below).
+- **Data init:** `none` | `replay-prefill` (target SAC replay seeded with source rollouts; already implicit in PPO→SAC).
+- **Policy source / value source:** `{none, sac, ppo, bc, iql/awac}` checkpoints.
+
+**`source-aligned` value targets (precisely specified):**
+- SAC→PPO: `V(s) ← E_{a∼π_distilled}[min(Q1,Q2)(s,a)]` regressed over replay states (well-defined; π is the just-distilled PPO actor).
+- PPO→SAC: `Q(s,a) ← reward-to-go R_t` from stored PPO trajectories (Monte-Carlo return, *not* the misspecified `V(s)+r`). Flagged open: may instead seed from a short Bellman regression; resolve at implementation.
+
+## Falsifiable Sub-Claims (v2)
+
+- **C1 — given fixed policy distillation, the inherited value substrate changes outcomes (necessary/sufficient test).** On SAC→PPO, hold `policy=distill` fixed and vary `value ∈ {random, self-warmup, source-aligned}`. If all three are statistically indistinguishable (overlapping bootstrap CIs on the primary metric), the value substrate is *not* the lever — C1 rejected, and we say so. Decoupled from C3.
+- **C2 — BC-only policy transfer interacts *differently* with on-policy vs off-policy learners (interaction hypothesis, direction empirical).** BC carries a policy but no value. We do *not* pre-commit to "BC→PPO fails." We test how a value-less policy prior is retained or overwritten under PPO (advantage-driven) vs SAC (Q-bootstrapped), and let the diagnostics explain whichever direction appears.
+- **C3 — a value-carrying offline source (IQL or AWAC) shifts the offline→online outcome relative to BC, and the shift is attributable to the transferred value.** Tests whether the C1 value lever generalizes to the offline→online setting. Gated at Tier 2 (not on C1's significance).
+
+**Negative-result diagnostics (per-claim, not one generic clause).** A null is interpreted, not shrugged off:
+- BC eval low *before* online fine-tuning → warm-start itself failed (not a transfer-mechanism result).
+- value warm-up loss drops but return doesn't move → inherited value is not behaviorally useful.
+- policy-KL-from-source spikes immediately post-handoff → target overwrites the transferred policy (explains why substrate "doesn't matter").
+- seed variance dominates the CI → underpowered, *not* evidence of no effect.
+- adaptive trigger picks extreme switch points → fixed fractions were miscalibrated.
+
+## Pre-Registered Metrics
+
+Declared before seeing results; this order decides the headline when metrics disagree:
+1. **AUC** of eval return over the matched *online* budget (primary — sample efficiency).
+2. Final eval return.
+3. Worst-seed return / collapse frequency (robustness).
+4. Seed standard error.
+5. Average rank across environments.
+
+Diagnostics *explain* outcomes; they never select the headline post hoc. Effect-size rule: a substrate "matters" only if its primary-metric bootstrap CI separates from the comparison arm's.
+
+## Budget Categories (never mix)
+
+- **Online-only, env-step matched:** pure SAC, pure PPO, SAC→PPO arms, PPO→SAC arms. Directly comparable on env steps + gradient updates.
+- **Offline-assisted:** BC→*, IQL/AWAC→*, BC→SAC→PPO, interleaved-BC. Report offline dataset size + offline pretraining updates *separately*. No unqualified "more sample efficient than pure online" claims.
+
+## Experimental Tiers (depth-protected; replaces the v1 flat matrix)
+
+Switch fraction fixed at **50%** inside the factored ablation to isolate substrate. Hopper-v4 + Walker2d-v4. ≥5 seeds for spine arms (high SAC variance demands it); bootstrap CIs reported.
+
+### Tier 0 — explanatory spine (GUARANTEED)
+SAC→PPO, `policy=distill` fixed, **value ∈ {random, self-warmup (current), source-aligned}**. Reference arms: pure PPO (= random policy + random value) and pure SAC. Throughline question: *does the value PPO inherits explain the handoff outcome?* Full diagnostic suite (below) on every arm.
+
+### Tier 1 — generalization of the decomposition (GUARANTEED)
+- **BC→PPO** and **BC→SAC** (policy=distill from offline expert, value per target's native bootstrap) — the C2 interaction test. Reuses `demos.py`.
+- **PPO→SAC** factored value ablation (`value ∈ {random, self-warmup=1000 Bellman, source-aligned}`) — shows the decomposition is not PPO-target-specific.
+
+### Tier 2 — value-carrying offline source (STRETCH; gate on Tier 0/1 showing a value effect)
+IQL *or* AWAC (one, chosen at the gate) → PPO and → SAC. The offline source carries both policy and value; isolates whether value transfer explains any BC gap (C3).
+
+### Tier 3 — novel probe (STRETCH; high understanding-value)
+**Interleaved BC during SAC**: periodic short BC re-anchoring every K steps throughout SAC training, not just at init. Distinguishes a one-time *initialization* effect from an ongoing *distributional-anchoring* effect — a genuine "why" question. Diagnostic-rich, small compute.
+
+### Tier 4 — timing / robustness (STRETCH; cheap)
+- 25/50/75 switch-fraction sweep on the best schedule (reuses `switch_fraction`; partly reuses existing Exp 2/3 data so the scheduler claim isn't pinned to 50%).
+- Minimal adaptive trigger: switch after `N` non-improving eval checkpoints past a minimum first-phase budget; log chosen switch step + reason. Framed as a "timing isn't magic" baseline, not a headline method.
+
+### Long-horizon check
+One long-horizon (≥500k, up to 1M on Hopper) comparison of the Tier-0 arms, to test whether the inherited-value effect *persists or washes out* — a mechanism question, not a "does PPO catch up" benchmark. Reuse existing baseline runs where available rather than re-running pure SAC/PPO.
+
+## Diagnostic Suite (this is where the contribution lives)
+
+Logged on every spine/generalization arm, per RULES.md high-fidelity logging:
+- **Policy retention:** action-MSE and approx-KL between current target policy and the transferred source policy, over post-handoff steps.
+- **Value quality:** explained variance (PPO), Q-scale / overestimation gap (SAC), `value_loss_at_handoff` and its trajectory.
+- **Advantage health (PPO target):** advantage mean/std, clip fraction, approx-KL.
+- **Exploration (SAC target):** policy entropy, action std, α.
+- **Handoff transient:** eval return immediately pre- vs post-handoff (does the switch cause a dip, and does it recover?).
+- **Phase markers:** `sac | distill | value_warmup | ppo | sac_critic_warmup | bc_anchor | adaptive_switch`.
 
 ## Implementation Scope
 
-### MUST (required for C1 + C2)
+### Already done (by teammates — do not rebuild)
+- **`demos.py`** — D4RL expert loader (`just-d4rl` preferred, legacy `d4rl`+`gym` fallback) with the exact obs/action shape-check the v1 spec asked for; caches `.npz`; gates Ant behind `--include-ant`. `just-d4rl>=0.2407.5` is in `pyproject.toml`.
 
-1. **`train_bc.py`** — single-file BC on D4RL `hopper-expert-v2` and `walker2d-expert-v2`. Gaussian policy matching the existing `MLPGaussian` architecture so checkpoints load directly into SAC / PPO actors. ~150 LOC.
-2. **`demos.py`** — D4RL loader with runtime sanity check that observation / action dims match Gymnasium v4 envs (they do for Hopper and Walker2d). Cached locally to avoid re-downloads per run.
-3. **Transfer-ablation harness** — `--transfer policy | value | policy+value | policy+value+replay` flag added to `train_handoff.py` and `train_reverse_handoff.py`. Selective checkpoint loading + optimizer reset (per RULES.md, no stale Adam moments across the handoff).
-4. **Value-warm-up phase** — short supervised phase aligning target's value head to source's, as described above. Capped at 5k updates. Logged warmup loss curve.
-5. **Logging extensions** — additional wandb scalars: `transfer_components`, `warmup_loss`, `value_loss_at_handoff`, `policy_kl_at_handoff`. Phase markers unchanged: `sac | handoff | ppo_value_warmup | ppo`.
-6. **Modal wrappers** — `experiment_4_modal.py` for the 100-run matrix; `experiment_5_modal.py` for the 25-run 1M-step headline. All Modal code stays out of core RL logic files per RULES.md Rule 1.
-7. **Analysis scripts** — `summarize_experiment_4.py` and `summarize_experiment_5.py` producing: (a) transfer-component bar chart per env, (b) learning curves with handoff + warm-up markers, (c) AUC table, (d) value-loss-at-handoff plot.
+### MUST (Tier 0–1)
+1. **`train_bc.py`** — BC producing a standalone Gaussian policy from cached D4RL expert data. Transfer into a target uses the *existing 500-step distillation loop* (so `policy=distill` is uniform across online and offline arms, and the actor-architecture mismatch is sidestepped). ~150 LOC.
+2. **Factored transfer flags** on `train_handoff.py` / `train_reverse_handoff.py`: `--policy-init`, `--value-init`, `--replay-init`, `--policy-source`, `--value-source`. Each matrix arm = an explicit flag combination. Optimizer reset preserved per RULES.md.
+3. **`source-aligned` value warm-up** implementing the precise targets above; logged `warmup_loss`. Falls back to `self-warmup` if it doesn't converge (documented, not hidden).
+4. **Diagnostic logging** — the suite above as wandb scalars + the expanded phase markers.
+5. **Modal wrappers** — `experiment_4_modal.py` (Tier 0–1). Modal code stays out of core RL files (RULES.md Rule 1).
+6. **Analysis** — `summarize_experiment_4.py`: per-arm AUC table w/ bootstrap CIs, learning curves with phase markers, policy-retention plot, value-quality plot, handoff-transient plot.
 
-### CONDITIONAL (gated on day-2 morning review; required for C3)
+### STRETCH (Tier 2–4; build at the gate)
+7. **`train_iql.py` or `train_awac.py`** — one, chosen at the Tier-2 gate by whichever drops in cleaner. Offline on D4RL. Saves policy + value for transfer.
+8. **Interleaved-BC mode** — `--bc-anchor-interval K` in the SAC loop; short distillation toward the expert policy every K steps; log anchor events.
+9. **Adaptive trigger** — `--switch-trigger no-improve --patience N --min-first-phase B`.
+10. **Timing sweep** — reuse `switch_fraction`; aggregate with existing Exp 2/3 data.
 
-8. **`train_iql.py`** — offline IQL on D4RL. Expectile V regression + advantage-weighted policy update. ~300 LOC. Reference: official IQL repo or CleanRL IQL.
-9. **IQL transfer wiring** — extend the harness to accept IQL checkpoints (compatible serialization for policy, V, and Q).
+### Smoke-test gate before any sweep
+Each new script at 1 seed × 50k steps must: (a) run without NaN/crash, (b) beat the random-policy floor, (c) log all required diagnostics + correct arm metadata.
 
-### Smoke-test gate before main sweep
-
-Each new script must pass three checks at 1 seed × 50k steps before any 5-seed sweep is launched:
-1. trains without NaN / crash,
-2. produces a learning curve above the random-policy floor,
-3. logs all required wandb fields and the correct `transfer_components` metadata.
-
-**Dataset mapping note.** Default BC expert datasets are:
+**Dataset mapping note.** Default BC expert datasets:
 - `Hopper-v4` → `hopper-expert-v2`
 - `Walker2d-v4` → `walker2d-expert-v2`
 - `HalfCheetah-v4` → `halfcheetah-expert-v2`
 - `Ant-v4` → `ant-expert-v2`
 
-Ant should remain gated behind strict observation/action compatibility checks because version differences can change observation features across Gym/Gymnasium/D4RL stacks.
+Ant stays gated behind strict obs/action compatibility checks; version differences can change observation features across Gym/Gymnasium/D4RL stacks.
 
 ## Execution Plan
 
-### Day 1 — implementation + main sweep
+### Day 1 — implement + run Tier 0–1
+- **Morning.** Parallel subagents: (A) `train_bc.py`; (B) factored transfer flags + `source-aligned` warm-up; (C) diagnostic logging + Modal wrapper + analysis skeleton.
+- **Midday gate.** Smoke-test all components; block sweep until green.
+- **Afternoon.** Launch Tier 0 (SAC→PPO value ablation) + Tier 1 (BC→PPO, BC→SAC, PPO→SAC value ablation), ≥5 seeds × 2 envs, across Modal + 3090s.
+- **Overnight.** Tier 0–1 completes.
 
-- **Morning (~4 hr).** Spawn 3 parallel subagents:
-  - Agent 1: `train_bc.py` + `demos.py`.
-  - Agent 2: transfer-ablation harness + value-warm-up phase.
-  - Agent 3: Modal wrappers + analysis-script skeletons.
-- **Midday gate.** Run smoke tests for all three components. Block sweep launch until all gates green.
-- **Afternoon (~4 hr).** Launch variants 1–8 (80 runs at 500k env steps × 5 seeds × 2 envs). Run in parallel across Modal + 2x 3090s.
-- **Overnight.** Main matrix completes.
-
-### Day 2 — IQL gate + headline + analysis
-
-- **Morning (~4 hr).** Review Day-1 results. Make C3 go / no-go decision:
-  - If C1 evidence is clean (policy vs policy+value ablation produces a statistically meaningful gap): green-light IQL. Spawn Agent 4 to implement `train_iql.py`.
-  - If C1 is null or noisy: skip IQL; deepen analysis instead.
-- **Afternoon (~4 hr).** If green-lit, smoke-test IQL and launch variants 9–10 (20 runs at 500k). Launch the 25-run 1M-step headline on Hopper.
-- **Evening.** Finalize plots, AUC tables, value-loss-at-handoff figures. Draft `RESULTS.md` headline + mechanism section.
+### Day 2 — gate, stretch, analysis
+- **Morning.** Review Tier 0–1 with full diagnostics. **Tier-2 gate:** if a value effect is present (separated CIs), build IQL *or* AWAC. In parallel: start Tier-0 figures + draft the mechanism narrative.
+- **Afternoon.** Tier 2 runs if green-lit; Tier 3 interleaved-BC; Tier 4 timing + adaptive (cheap). Long-horizon Tier-0 check.
+- **Evening.** Finalize diagnostic figures, AUC tables w/ CIs; draft `RESULTS.md` organized by claim + diagnostic interpretation.
 
 ## Risks and Mitigations
 
 | Risk | Likelihood | Mitigation |
 |------|-----------|------------|
-| D4RL v2 ↔ Gym v4 obs / action mismatch | Low | Runtime sanity check at load; Hopper / Walker2d stable across versions |
-| BC checkpoint arch mismatch with SAC / PPO actors | Medium | Share `MLPGaussian` from existing code; BC trained as Gaussian policy |
-| Value warm-up doesn't converge | Medium | Cap at 5k updates; log warmup loss; fall back to random-init value and document |
-| Modal credit burn faster than expected | Medium | Overflow to 3090s; can drop to 3 seeds for non-headline variants |
-| IQL implementation buggy | Medium-High | Use reference impl; if not green by Day-2 afternoon, drop C3 and report C1 + C2 |
-| All ablations statistically indistinguishable | Low-Medium | Pre-committed falsification clause; report as clean negative + characterize |
-| One env shows a result, the other doesn't | Medium | Already a finding; report per-env breakdown; investigate via internal metrics |
+| Existing distillation confounds the substrate ablation | High (now understood) | Hold `policy=distill` fixed across value arms; name arms by operation; include cold reference (pure PPO) |
+| `source-aligned` value target misspecified (esp. PPO→SAC Q) | Medium | Use reward-to-go target; cap warm-up; fall back to `self-warmup` and document |
+| High seed variance (Hopper σ≈±795) swamps effects | Medium-High | ≥5 seeds on spine; bootstrap CIs; pre-declared effect-size rule; treat overlap as underpowered, not null |
+| Over-scoping (Tiers 2–4) eats the depth | High | Tier 0–1 guaranteed; 2–4 strictly gated and ordered; IQL XOR AWAC |
+| BC distillation collapses target policy | Medium | Log policy-retention; reuse validated distill loop; tune distill steps if needed |
+| Modal credit burn | Medium | Overflow to 3090s; drop stretch tiers before touching spine seeds |
 
 ## Deliverables (end of Day 2)
+- All raw runs in W&B `herschethan-stanford-university/rl-translational-dynamics`.
+- Diagnostic figures: per-arm AUC w/ CIs, phase-marked learning curves, policy-retention, value-quality, handoff-transient, long-horizon Tier-0 check.
+- `experiments/experiment_4.md` with full per-arm configs + per-env takeaways.
+- `RESULTS.md` organized by C1/C2/(C3) with explicit diagnostic interpretation of each outcome (including nulls).
 
-- All raw runs in W&B project `herschethan-stanford-university/rl-translational-dynamics`.
-- Processed plots:
-  - transfer-component bar chart per env
-  - learning curves with phase + warm-up markers per env
-  - AUC table across variants
-  - value-loss-at-handoff comparison
-  - 1M-step headline figure
-- `experiments/experiment_4.md` and `experiments/experiment_5.md` with full configs + per-env takeaways.
-- `RESULTS.md` writing up C1 / C2 / (C3 if available) findings with concrete numbers.
+## Out-of-Scope (Future Work)
+- Both IQL and AWAC (pick one).
+- Cross-environment transfer.
+- Discrete-action variants / DQN on gridworld.
+- GRPO-family sequencing (LLM-oriented).
+- Model-based → model-free (e.g., MBPO → SAC).
+- A *learned* adaptive scheduler beyond the minimal no-improve trigger.
 
-## Out-of-Scope (Explicitly Future Work)
+## Open Questions (resolve during execution)
+1. `source-aligned` PPO→SAC Q target: reward-to-go vs short Bellman seed. Resolve at implementation; log both warm-up losses if cheap.
+2. Interleaved-BC interval K and anchor strength. Start with a coarse sweep on Hopper.
+3. Most-diagnostic spine pair confirmation: spine is SAC→PPO (PPO is the value-hungry target, unifying with C2/C3). Revisit only if Tier-0 diagnostics are uninformative.
+4. Long-horizon seed count under Modal burn rate.
 
-- Cyclic / multi-switch sequences (e.g., SAC -> PPO -> SAC). Cheap to add later but not on the mechanistic critical path.
-- Cross-environment transfer (policy learned on one env, fine-tuned on another).
-- Discrete-action env variants (e.g., DQN on gridworld). Generalization to discrete control is a separate paper.
-- GRPO-family sequencing. Mostly LLM-oriented; weak motivation for MuJoCo.
-- Model-based -> model-free sequencing (e.g., MBPO -> SAC). Significant new infrastructure.
-- Adaptive switching trigger (KL-drift based). Originally Experiment 3 in the proposal; defer to a follow-up because trigger validation is high-execution-risk in the remaining time budget.
-
-## Open Questions to Resolve During Execution
-
-1. **Value warm-up duration.** Is 5k updates the right cap? May need to be env- or algorithm-pair-specific. Resolution: log warmup loss curves; pick the elbow.
-2. **BC policy entropy regularization.** Should BC train with action-noise regularization to better match SAC's stochasticity? Default: no, train deterministic-NLL on Gaussian; reassess if BC -> SAC collapses early.
-3. **Replay buffer pre-fill (variant 6 + replay).** Not in the main matrix but cheap to add. Decision: add iff variant 6 results are interesting enough to justify the micro-ablation.
-4. **Seed count for headline 1M runs.** 5 seeds × 5 variants = 25 runs. If compute is tight, drop to 3 seeds × 5 variants = 15. Resolution: actual Modal burn rate by end of Day-1.
+## Critique Integration Log (2026-05-26)
+- **Ryan (verified in code):** C1/distillation confound → reframed C1 as factored value ablation + added "Ground Truth" section + operation-named arms. Architecture mismatch → BC via distillation, dropped invented `MLPGaussian`. Missing value-only arm → `value=random` arm added. Value recipe mismatch → precise `source-aligned` targets specified. C3 gate logic → decoupled from C1. Stat power → ≥5 seeds + bootstrap CIs + effect-size rule. D4RL dep → confirmed already resolved (`just-d4rl` + `demos.py`).
+- **Ethan:** thesis over-centered on transfer → mechanism kept as thesis (per project goal) with phase-vocabulary wrapper; performance demoted. 50/50 too narrow → Tier-4 timing sweep. C2 determinism → reframed as interaction hypothesis. Offline budget language → separate budget categories. Three-phase scheduler → BC→SAC→PPO retained (Tier 1/3 family). Adaptive switching → minimal trigger (Tier 4). Metric pre-registration → added. Negative-result framing → per-claim diagnostics added.
