@@ -47,7 +47,7 @@ This is a "mechanism + generalization" claim: a mechanistic explanation of when 
 
 ### Compute accounting
 
-Online compute is reported in env steps and gradient updates. BC and IQL pretraining is treated as offline pre-processing on the D4RL `*-expert-v2` datasets (standard treatment in AWAC / IQL literature). The report will be transparent about this convention.
+Online compute is reported in env steps and gradient updates. BC and IQL pretraining is treated as offline pre-processing on D4RL Gym-MuJoCo `*-expert-v2` datasets (expert policy rollouts, not human demonstrations). The report will be transparent about this convention.
 
 ### Switch direction and target representations
 
@@ -76,6 +76,14 @@ Each new script must pass three checks at 1 seed × 50k steps before any 5-seed 
 1. trains without NaN / crash,
 2. produces a learning curve above the random-policy floor,
 3. logs all required wandb fields and the correct `transfer_components` metadata.
+
+**Dataset mapping note.** Default BC expert datasets are:
+- `Hopper-v4` → `hopper-expert-v2`
+- `Walker2d-v4` → `walker2d-expert-v2`
+- `HalfCheetah-v4` → `halfcheetah-expert-v2`
+- `Ant-v4` → `ant-expert-v2`
+
+Ant should remain gated behind strict observation/action compatibility checks because version differences can change observation features across Gym/Gymnasium/D4RL stacks.
 
 ## Execution Plan
 
