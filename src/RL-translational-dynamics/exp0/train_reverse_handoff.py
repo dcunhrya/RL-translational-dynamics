@@ -54,6 +54,11 @@ class Args:
     sac_train_frequency: int = 1
     sac_alpha: float = 0.2
     sac_autotune: bool = True
+    policy_init: str = "distill"
+    value_init: str = "self-warmup"
+    switch_trigger: str = "fixed_fraction"
+    patience: int = 3
+    min_first_phase: int = 0
     distill_steps: int = 500
     distill_batch_size: int = 1024
     distill_learning_rate: float = 1e-3
@@ -85,15 +90,20 @@ def parse_args() -> Args:
 
 
 def build_metadata(args: Args, phase: str, switch_step: int, switched: bool) -> dict:
+    switch_reason = args.switch_trigger if args.switch_trigger != "fixed_fraction" else "fixed_fraction"
     return {
         "algorithm": "ppo_to_sac",
         "phase": phase,
         "switched": switched,
         "switch_step": switch_step if switched else None,
-        "switch_reason": "fixed_fraction" if switched else None,
-        "trigger_value": args.switch_fraction if switched else None,
+        "switch_reason": switch_reason if switched else None,
+        "trigger_value": args.switch_fraction if switched and args.switch_trigger == "fixed_fraction" else None,
         "planned_switch_step": switch_step,
         "handoff_fraction": args.switch_fraction,
+        "switch_trigger": args.switch_trigger,
+        "policy_init": args.policy_init,
+        "value_init": args.value_init,
+        "transfer_components": f"policy={args.policy_init},value={args.value_init}",
     }
 
 
@@ -155,19 +165,45 @@ def replay_size(replay_buffer: ReplayBuffer) -> int:
     return replay_buffer.size if replay_buffer.full else replay_buffer.ptr
 
 
+def discounted_returns(rewards: list[float], dones: list[bool], gamma: float) -> np.ndarray:
+    returns = np.zeros(len(rewards), dtype=np.float32)
+    running_return = 0.0
+    for idx in reversed(range(len(rewards))):
+        if dones[idx]:
+            running_return = 0.0
+        running_return = float(rewards[idx]) + gamma * running_return
+        returns[idx] = running_return
+    return returns
+
+
 def main() -> None:
     args = parse_args()
     if args.total_timesteps < 2:
         raise ValueError("total_timesteps must be at least 2 for a PPO -> SAC handoff.")
     if not 0.0 < args.switch_fraction < 1.0:
         raise ValueError(f"switch_fraction must be in (0, 1), got {args.switch_fraction}.")
+    if args.policy_init not in {"random", "distill"}:
+        raise ValueError(f"policy_init must be one of random|distill, got {args.policy_init}.")
+    if args.value_init not in {"random", "self-warmup", "source-aligned"}:
+        raise ValueError(f"value_init must be one of random|self-warmup|source-aligned, got {args.value_init}.")
+    if args.switch_trigger not in {"fixed_fraction", "no-improve"}:
+        raise ValueError(f"switch_trigger must be one of fixed_fraction|no-improve, got {args.switch_trigger}.")
+    if args.patience < 1:
+        raise ValueError("patience must be >= 1.")
 
-    switch_step = int(args.total_timesteps * args.switch_fraction)
-    switch_step = min(max(1, switch_step), args.total_timesteps - 1)
+    planned_switch_step = int(args.total_timesteps * args.switch_fraction)
+    planned_switch_step = min(max(1, planned_switch_step), args.total_timesteps - 1)
+    switch_step = planned_switch_step
     switch_pct = int(round(args.switch_fraction * 100))
+    min_first_phase = args.min_first_phase if args.min_first_phase > 0 else switch_step
+    min_first_phase = min(max(1, min_first_phase), args.total_timesteps - 1)
     env_slug = args.env_id.replace("-v", "_v").replace("-", "_")
     horizon_k = int(args.total_timesteps / 1000)
-    run_name = f"reverse_handoff__{env_slug}__switch_{switch_pct}pct__seed_{args.seed}__{horizon_k}k__{int(time.time())}"
+    trigger_slug = args.switch_trigger.replace("_", "-")
+    run_name = (
+        f"reverse_handoff__{env_slug}__{trigger_slug}_{switch_pct}pct__"
+        f"policy_{args.policy_init}__value_{args.value_init}__seed_{args.seed}__{horizon_k}k__{int(time.time())}"
+    )
     save_dir = Path(args.save_dir) / run_name
     save_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = save_dir / "metrics.jsonl"
@@ -187,7 +223,15 @@ def main() -> None:
             name=run_name,
             config=asdict(args),
             save_code=True,
-            tags=["experiment_3", "reverse_handoff", args.env_id, f"switch_{switch_pct}pct"],
+            tags=[
+                "ethan_task",
+                "reverse_handoff",
+                args.env_id,
+                f"switch_{switch_pct}pct",
+                f"policy_{args.policy_init}",
+                f"value_{args.value_init}",
+                f"trigger_{args.switch_trigger}",
+            ],
         )
 
     env = make_env(args.env_id, args.seed, args.capture_video, run_name)
@@ -229,7 +273,14 @@ def main() -> None:
     last_eval_step = 0
     last_save_step = 0
     ppo_update_index = 0
-    ppo_total_updates = math.ceil(switch_step / args.ppo_num_steps)
+    ppo_total_updates = math.ceil(planned_switch_step / args.ppo_num_steps)
+    ppo_source_obs: list[np.ndarray] = []
+    ppo_source_actions: list[np.ndarray] = []
+    ppo_source_rewards: list[float] = []
+    ppo_source_dones: list[bool] = []
+    best_eval_return = -float("inf")
+    no_improve_count = 0
+    adaptive_switched = False
 
     initial_eval_mean, initial_eval_std = evaluate_ppo(
         ppo_agent, args.env_id, args.seed + 10_000, device, args.num_eval_episodes
@@ -253,6 +304,7 @@ def main() -> None:
             ppo_optimizer.param_groups[0]["lr"] = frac * args.ppo_learning_rate
 
         rollout_steps = min(args.ppo_num_steps, switch_step - global_step)
+        actual_rollout_steps = 0
         for step in range(rollout_steps):
             obs_buf[step] = next_obs
             dones_buf[step] = next_done
@@ -264,13 +316,19 @@ def main() -> None:
             logprobs_buf[step] = logprob.squeeze(0)
 
             current_obs_np = next_obs.detach().cpu().numpy()
-            next_obs_np, reward, terminated, truncated, info = env.step(action.cpu().numpy()[0])
+            action_np = action.cpu().numpy()[0]
+            next_obs_np, reward, terminated, truncated, info = env.step(action_np)
             real_done = bool(terminated)
             episode_done = bool(terminated or truncated)
-            replay_buffer.add(current_obs_np, next_obs_np, action.cpu().numpy()[0], float(reward), real_done)
+            replay_buffer.add(current_obs_np, next_obs_np, action_np, float(reward), real_done)
+            ppo_source_obs.append(current_obs_np.copy())
+            ppo_source_actions.append(action_np.copy())
+            ppo_source_rewards.append(float(reward))
+            ppo_source_dones.append(episode_done)
             next_done = torch.tensor(float(episode_done), device=device)
             rewards_buf[step] = float(reward)
             global_step += 1
+            actual_rollout_steps += 1
 
             if "episode" in info:
                 episode_metrics = {
@@ -307,6 +365,29 @@ def main() -> None:
                 eval_metrics.update(build_metadata(args, "ppo", switch_step, switched=False))
                 write_metric(metrics_path, eval_metrics, wandb_run)
                 last_eval_step = global_step
+                if args.switch_trigger == "no-improve" and global_step >= min_first_phase:
+                    if eval_mean > best_eval_return:
+                        best_eval_return = eval_mean
+                        no_improve_count = 0
+                    else:
+                        no_improve_count += 1
+                    trigger_metrics = {
+                        "env": args.env_id,
+                        "seed": args.seed,
+                        "env_steps": global_step,
+                        "gradient_updates": gradient_updates,
+                        "wall_clock_sec": time.time() - start_time,
+                        "adaptive_best_eval_return": best_eval_return,
+                        "adaptive_no_improve_count": no_improve_count,
+                        "adaptive_patience": args.patience,
+                        "adaptive_min_first_phase": min_first_phase,
+                    }
+                    trigger_metrics.update(build_metadata(args, "adaptive_monitor", switch_step, switched=False))
+                    write_metric(metrics_path, trigger_metrics, wandb_run)
+                    if no_improve_count >= args.patience:
+                        switch_step = min(max(1, global_step), args.total_timesteps - 1)
+                        adaptive_switched = True
+                        break
 
             if global_step - last_save_step >= args.save_interval or global_step == switch_step:
                 save_checkpoint(
@@ -330,12 +411,18 @@ def main() -> None:
                 )
                 last_save_step = global_step
 
+            if adaptive_switched:
+                break
+
+        if actual_rollout_steps == 0:
+            break
+
         with torch.no_grad():
             next_value = ppo_agent.get_value(next_obs.unsqueeze(0)).reshape(1)
-            advantages = torch.zeros(rollout_steps, device=device)
+            advantages = torch.zeros(actual_rollout_steps, device=device)
             lastgaelam = 0.0
-            for t in reversed(range(rollout_steps)):
-                if t == rollout_steps - 1:
+            for t in reversed(range(actual_rollout_steps)):
+                if t == actual_rollout_steps - 1:
                     nextnonterminal = 1.0 - next_done
                     nextvalues = next_value
                 else:
@@ -343,16 +430,16 @@ def main() -> None:
                     nextvalues = values_buf[t + 1]
                 delta = rewards_buf[t] + args.ppo_gamma * nextvalues * nextnonterminal - values_buf[t]
                 advantages[t] = lastgaelam = delta + args.ppo_gamma * args.ppo_gae_lambda * nextnonterminal * lastgaelam
-            returns = advantages + values_buf[:rollout_steps]
+            returns = advantages + values_buf[:actual_rollout_steps]
 
-        b_obs = obs_buf[:rollout_steps]
-        b_logprobs = logprobs_buf[:rollout_steps]
-        b_actions = actions_buf[:rollout_steps]
+        b_obs = obs_buf[:actual_rollout_steps]
+        b_logprobs = logprobs_buf[:actual_rollout_steps]
+        b_actions = actions_buf[:actual_rollout_steps]
         b_advantages = advantages
         b_returns = returns
-        b_values = values_buf[:rollout_steps]
-        b_inds = np.arange(rollout_steps)
-        minibatch_size = max(1, rollout_steps // args.ppo_num_minibatches)
+        b_values = values_buf[:actual_rollout_steps]
+        b_inds = np.arange(actual_rollout_steps)
+        minibatch_size = max(1, actual_rollout_steps // args.ppo_num_minibatches)
         clipfracs = []
         approx_kl_value = 0.0
         old_approx_kl_value = 0.0
@@ -363,7 +450,7 @@ def main() -> None:
 
         for _ in range(args.ppo_update_epochs):
             np.random.shuffle(b_inds)
-            for start in range(0, rollout_steps, minibatch_size):
+            for start in range(0, actual_rollout_steps, minibatch_size):
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
                 _, newlogprob, entropy, newvalue = ppo_agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
@@ -440,24 +527,41 @@ def main() -> None:
         finite_values = [v for v in train_metrics.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
         if not np.isfinite(finite_values).all():
             raise FloatingPointError(f"Non-finite PPO metric at step {global_step}: {train_metrics}")
+        if adaptive_switched:
+            switch_metrics = {
+                "env": args.env_id,
+                "seed": args.seed,
+                "env_steps": switch_step,
+                "gradient_updates": gradient_updates,
+                "wall_clock_sec": time.time() - start_time,
+                "adaptive_best_eval_return": best_eval_return,
+                "adaptive_no_improve_count": no_improve_count,
+                "adaptive_patience": args.patience,
+                "adaptive_min_first_phase": min_first_phase,
+                "switch_reason_detail": "no_improve",
+            }
+            switch_metrics.update(build_metadata(args, "adaptive_switch", switch_step, switched=True))
+            write_metric(metrics_path, switch_metrics, wandb_run)
+            break
 
     observations = replay_observations(replay_buffer)
     if len(observations) == 0:
         raise RuntimeError("Cannot distill SAC actor because the replay buffer is empty at handoff.")
 
-    distill_optimizer = optim.Adam(sac_actor.parameters(), lr=args.distill_learning_rate)
     distill_loss_value = 0.0
-    for _ in range(args.distill_steps):
-        batch_indices = np.random.randint(0, len(observations), size=min(args.distill_batch_size, len(observations)))
-        obs_batch = torch.as_tensor(observations[batch_indices], dtype=torch.float32, device=device)
-        with torch.no_grad():
-            ppo_actions, _, _, _ = ppo_agent.get_action_and_value(obs_batch, deterministic=True)
-        sac_actions, _, _ = sac_actor.get_action(obs_batch, deterministic=True)
-        distill_loss = F.mse_loss(sac_actions, ppo_actions)
-        distill_optimizer.zero_grad()
-        distill_loss.backward()
-        distill_optimizer.step()
-        distill_loss_value = float(distill_loss.item())
+    if args.policy_init == "distill":
+        distill_optimizer = optim.Adam(sac_actor.parameters(), lr=args.distill_learning_rate)
+        for _ in range(args.distill_steps):
+            batch_indices = np.random.randint(0, len(observations), size=min(args.distill_batch_size, len(observations)))
+            obs_batch = torch.as_tensor(observations[batch_indices], dtype=torch.float32, device=device)
+            with torch.no_grad():
+                ppo_actions, _, _, _ = ppo_agent.get_action_and_value(obs_batch, deterministic=True)
+            sac_actions, _, _ = sac_actor.get_action(obs_batch, deterministic=True)
+            distill_loss = F.mse_loss(sac_actions, ppo_actions)
+            distill_optimizer.zero_grad()
+            distill_loss.backward()
+            distill_optimizer.step()
+            distill_loss_value = float(distill_loss.item())
 
     sac_actor_optimizer = optim.Adam(sac_actor.parameters(), lr=args.sac_learning_rate)
     sac_q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.sac_learning_rate)
@@ -478,8 +582,11 @@ def main() -> None:
         "gradient_updates": gradient_updates,
         "wall_clock_sec": time.time() - start_time,
         "handoff_distill_loss": distill_loss_value,
-        "handoff_distill_steps": args.distill_steps,
+        "handoff_distill_steps": args.distill_steps if args.policy_init == "distill" else 0,
         "handoff_replay_size": replay_size(replay_buffer),
+        "actual_switch_step": switch_step,
+        "initial_planned_switch_step": planned_switch_step,
+        "adaptive_switched": adaptive_switched,
     }
     handoff_metrics.update(build_metadata(args, "handoff", switch_step, switched=True))
     write_metric(metrics_path, handoff_metrics, wandb_run)
@@ -506,7 +613,55 @@ def main() -> None:
             f"Replay buffer only has {replay_size(replay_buffer)} samples at handoff, fewer than sac_batch_size={args.sac_batch_size}."
         )
 
-    for _ in range(args.sac_critic_warmup_updates):
+    if args.value_init == "source-aligned":
+        if not ppo_source_obs:
+            raise RuntimeError("Cannot run source-aligned value init without PPO source trajectories.")
+        source_obs = np.asarray(ppo_source_obs, dtype=np.float32)
+        source_actions = np.asarray(ppo_source_actions, dtype=np.float32)
+        source_returns = discounted_returns(ppo_source_rewards, ppo_source_dones, args.ppo_gamma)
+        for _ in range(args.sac_critic_warmup_updates):
+            batch_indices = np.random.randint(0, len(source_obs), size=min(args.sac_batch_size, len(source_obs)))
+            b_obs = torch.as_tensor(source_obs[batch_indices], dtype=torch.float32, device=device)
+            b_actions = torch.as_tensor(source_actions[batch_indices], dtype=torch.float32, device=device)
+            b_returns = torch.as_tensor(source_returns[batch_indices, None], dtype=torch.float32, device=device)
+
+            qf1_a_values = qf1(b_obs, b_actions)
+            qf2_a_values = qf2(b_obs, b_actions)
+            qf1_loss = F.mse_loss(qf1_a_values, b_returns)
+            qf2_loss = F.mse_loss(qf2_a_values, b_returns)
+            qf_loss = qf1_loss + qf2_loss
+            sac_q_optimizer.zero_grad()
+            qf_loss.backward()
+            critic_grad_norm = grad_norm(list(qf1.parameters()) + list(qf2.parameters()))
+            sac_q_optimizer.step()
+            gradient_updates += 1
+
+            warmup_metrics = {
+                "env": args.env_id,
+                "seed": args.seed,
+                "env_steps": switch_step,
+                "gradient_updates": gradient_updates,
+                "wall_clock_sec": time.time() - start_time,
+                "sac_critic_loss": float(qf_loss.item()),
+                "sac_qf1_loss": float(qf1_loss.item()),
+                "sac_qf2_loss": float(qf2_loss.item()),
+                "sac_qf1_mean": float(qf1_a_values.mean().item()),
+                "sac_qf2_mean": float(qf2_a_values.mean().item()),
+                "sac_target_q_mean": float(b_returns.mean().item()),
+                "source_aligned_return_mean": float(b_returns.mean().item()),
+                "source_aligned_return_std": float(b_returns.std().item()) if b_returns.numel() > 1 else 0.0,
+                "sac_critic_grad_norm": critic_grad_norm,
+                "actor_lr": sac_actor_optimizer.param_groups[0]["lr"],
+                "critic_lr": sac_q_optimizer.param_groups[0]["lr"],
+            }
+            warmup_metrics.update(build_metadata(args, "sac_source_aligned_warmup", switch_step, switched=True))
+            write_metric(metrics_path, warmup_metrics, wandb_run)
+
+        qf1_target.load_state_dict(qf1.state_dict())
+        qf2_target.load_state_dict(qf2.state_dict())
+
+    self_warmup_updates = args.sac_critic_warmup_updates if args.value_init == "self-warmup" else 0
+    for _ in range(self_warmup_updates):
         b_obs, b_next_obs, b_actions, b_rewards, b_dones = replay_buffer.sample(args.sac_batch_size)
         with torch.no_grad():
             next_actions, next_log_pi, _ = sac_actor.get_action(b_next_obs)
