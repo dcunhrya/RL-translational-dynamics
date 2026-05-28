@@ -11,3 +11,14 @@
 # experiment artifacts
 wandb/
 results/
+
+# Ryan Modal launch/requeue intermediates
+experiments/modal_detached_logs/
+experiments/ryan_modal*_manifest*.json
+experiments/ryan_requeue_audit*.json
+
+# Ryan result-generation caches and tables.
+# Keep reports and figures under experiments/ryan_task/ for review/presentation.
+experiments/ryan_task/raw/
+experiments/ryan_task/processed/
+experiments/ryan_task/audit/
