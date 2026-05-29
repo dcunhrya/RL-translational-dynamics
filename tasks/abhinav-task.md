@@ -18,42 +18,38 @@
 
 ### Global split summary
 
-| Member | Owns | Units |
-|---|---|---|
-| Ryan | baselines + SAC→PPO value ablation + long-horizon (baselines) | ~56 |
-| Ethan | PPO→SAC value ablation + timing sweep + adaptive trigger + long-horizon (1 T0 arm + PPO) | ~60 |
-| **Abhinav** | offline pipeline (BC, IQL/AWAC, interleaved-BC) + infra (Modal/logging/analysis) + long-horizon (2 T0 arms) | ~57 |
+| Member      | Owns                                                                                                        | Units |
+| ----------- | ----------------------------------------------------------------------------------------------------------- | ----- |
+| Ryan        | baselines + SAC→PPO value ablation + long-horizon (baselines)                                               | ~56   |
+| Ethan       | PPO→SAC value ablation + timing sweep + adaptive trigger + long-horizon (1 T0 arm + PPO)                    | ~60   |
+| **Abhinav** | offline pipeline (BC, IQL/AWAC, interleaved-BC) + infra (Modal/logging/analysis) + long-horizon (2 T0 arms) | ~57   |
 
 ---
 
 ## Implementation tasks
 
 **Infra (upstream — must land Day-1 morning so Ryan/Ethan can run):**
+
 1. **Diagnostic-logging harness** — the shared wandb scalar set + expanded phase markers (`sac | distill | value_warmup | ppo | sac_critic_warmup | bc_anchor | adaptive_switch`) used by every arm.
 2. **Modal wrappers** — `experiment_4_modal.py` for Tier 0–1, plus wrappers for stretch tiers. Modal code stays out of core RL files (RULES.md Rule 1).
 3. **Analysis** — `summarize_experiment_4.py`: per-arm AUC w/ bootstrap CIs, phase-marked learning curves, policy-retention, value-quality, handoff-transient plots.
 
-**Offline pipeline (your experiments):**
-4. **`train_bc.py`** — BC → standalone Gaussian policy from cached D4RL expert data (`demos.py` already loads/caches it). Transfer into a target reuses the existing 500-step distillation loop (keeps `policy=distill` uniform; sidesteps the SAC/PPO actor-arch mismatch). ~150 LOC.
-5. **`train_iql.py` or `train_awac.py`** — one, chosen at the Tier-2 gate by whichever drops in cleaner. Offline on D4RL; saves policy + value for transfer.
-6. **Interleaved-BC mode** — `--bc-anchor-interval K` in the SAC loop: short distillation toward the expert policy every K steps; log `bc_anchor` events. Distinguishes one-time init effect from ongoing distributional-anchoring.
+**Offline pipeline (your experiments):** 4. **`train_bc.py`** — BC → standalone Gaussian policy from cached D4RL expert data (`demos.py` already loads/caches it). Transfer into a target reuses the existing 500-step distillation loop (keeps `policy=distill` uniform; sidesteps the SAC/PPO actor-arch mismatch). ~150 LOC. 5. **`train_iql.py` or `train_awac.py`** — one, chosen at the Tier-2 gate by whichever drops in cleaner. Offline on D4RL; saves policy + value for transfer. 6. **Interleaved-BC mode** — `--bc-anchor-interval K` in the SAC loop: short distillation toward the expert policy every K steps; log `bc_anchor` events. Distinguishes one-time init effect from ongoing distributional-anchoring.
 
-**Stretch transfer warm-starts (after the core offline pipeline is stable):**
-7. **Easy-environment pretraining** — train a starter policy on a simplified or more forgiving version of the target MuJoCo environment, then distill/init it into SAC or PPO on the original benchmark. Candidate simplifications: denser or more lenient reward shaping, easier termination conditions, shorter horizons, narrower initial-state perturbations, or adjusted action penalties that reward smoother behavior. Report pretraining updates separately and keep real-environment fine-tuning steps matched against BC→SAC / BC→PPO and pure SAC/PPO.
-8. **General starter policy diagnostic** — exploratory only. Test whether a broadly pretrained starter policy can help multiple target environments if a clean transfer interface exists. Because MuJoCo tasks can have incompatible observation/action dimensions, prefer a narrow pilot or per-target distillation over a full sweep.
+**Stretch transfer warm-starts (after the core offline pipeline is stable):** 7. **Easy-environment RL pretraining** — train the starter policy with RL on a simplified or more forgiving version of the target MuJoCo environment, then init/distill it into SAC or PPO on the original benchmark. This is **not** a BC-first experiment unless we explicitly add a separate easy-env expert→BC distillation stage. First arm: **Easy SAC → real SAC** because it is the cleanest same-algorithm curriculum test. Optional second arm: **Easy PPO → real SAC** because it better matches the phase-scheduler story (stable easy-env warm start, then sample-efficient real-env improvement). Candidate simplifications: denser or more lenient reward shaping, easier termination conditions, shorter horizons, narrower initial-state perturbations, or adjusted action penalties that reward smoother behavior. Report pretraining updates separately and keep real-environment fine-tuning steps matched against BC→SAC / BC→PPO and pure SAC/PPO. 8. **General starter policy diagnostic** — exploratory only. Test whether a broadly pretrained starter policy can help multiple target environments if a clean transfer interface exists. Because MuJoCo tasks can have incompatible observation/action dimensions, prefer a narrow pilot or per-target distillation over a full sweep.
 
 ## Experiments owned
 
-| Experiment | arms×envs×seeds×steps | runs | units |
-|---|---|---|---|
-| BC pretrain (offline) | 2 envs | 2 | ~0.5 |
-| **Tier 1** BC→PPO, BC→SAC | 2×2×5×500k | 20 | 20 |
-| **Tier 2** IQL/AWAC offline train | 2 envs | 2 | ~0.6 |
-| **Tier 2** IQL/AWAC → PPO, → SAC | 2×2×3×500k | 12 | 12 |
-| **Tier 3** interleaved-BC K-sweep (Hopper) | 3×1×3×500k | 9 | 9 |
-| **Tier 3** interleaved-BC best-K (Walker2d) | 1×1×3×500k | 3 | 3 |
-| Long-horizon: 2× Tier-0 arms @1M Hopper | 2×1×3×1M | 6 | 12 |
-| **Total** | | **54** | **~57** |
+| Experiment                                  | arms×envs×seeds×steps | runs   | units   |
+| ------------------------------------------- | --------------------- | ------ | ------- |
+| BC pretrain (offline)                       | 2 envs                | 2      | ~0.5    |
+| **Tier 1** BC→PPO, BC→SAC                   | 2×2×5×500k            | 20     | 20      |
+| **Tier 2** IQL/AWAC offline train           | 2 envs                | 2      | ~0.6    |
+| **Tier 2** IQL/AWAC → PPO, → SAC            | 2×2×3×500k            | 12     | 12      |
+| **Tier 3** interleaved-BC K-sweep (Hopper)  | 3×1×3×500k            | 9      | 9       |
+| **Tier 3** interleaved-BC best-K (Walker2d) | 1×1×3×500k            | 3      | 3       |
+| Long-horizon: 2× Tier-0 arms @1M Hopper     | 2×1×3×1M              | 6      | 12      |
+| **Total**                                   |                       | **54** | **~57** |
 
 ## Acceptance criteria
 
