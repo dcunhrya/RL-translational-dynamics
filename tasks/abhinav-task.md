@@ -38,6 +38,10 @@
 5. **`train_iql.py` or `train_awac.py`** — one, chosen at the Tier-2 gate by whichever drops in cleaner. Offline on D4RL; saves policy + value for transfer.
 6. **Interleaved-BC mode** — `--bc-anchor-interval K` in the SAC loop: short distillation toward the expert policy every K steps; log `bc_anchor` events. Distinguishes one-time init effect from ongoing distributional-anchoring.
 
+**Stretch transfer warm-starts (after the core offline pipeline is stable):**
+7. **Easy-environment pretraining** — train a starter policy on a simplified or more forgiving version of the target MuJoCo environment, then distill/init it into SAC or PPO on the original benchmark. Candidate simplifications: denser or more lenient reward shaping, easier termination conditions, shorter horizons, narrower initial-state perturbations, or adjusted action penalties that reward smoother behavior. Report pretraining updates separately and keep real-environment fine-tuning steps matched against BC→SAC / BC→PPO and pure SAC/PPO.
+8. **General starter policy diagnostic** — exploratory only. Test whether a broadly pretrained starter policy can help multiple target environments if a clean transfer interface exists. Because MuJoCo tasks can have incompatible observation/action dimensions, prefer a narrow pilot or per-target distillation over a full sweep.
+
 ## Experiments owned
 
 | Experiment | arms×envs×seeds×steps | runs | units |
@@ -57,10 +61,12 @@
 - Tier-1 BC arms framed as the **interaction hypothesis** (C2): do NOT pre-assume BC→PPO fails. Log policy-retention from the BC policy under both PPO and SAC.
 - Tier-2 (C3) is gated: build only if Tier 0/1 show a value effect (separated CIs). If built, isolate whether IQL/AWAC's transferred value explains any BC gap.
 - Interleaved-BC: report whether mid-training anchoring helps/hurts vs init-only, with the anchor events marked on curves.
+- Easy-environment pretraining: evaluate as the real stretch transfer experiment. Main metrics are early AUC, convergence speed, final return, stability, and policy retention after transfer. Claims should focus on whether curriculum-style warm starts improve real-environment learning, not on universal dominance over SAC.
+- General starter policy: treat as exploratory unless the architecture/space mismatch is solved cleanly; do not let it displace the core BC/IQL/AWAC runs.
 
 ## Coordination / dependency notes
 
 - **Your infra (items 1–3) is upstream for everyone.** Ship the logging harness + Modal wrapper first; Ryan/Ethan's sweeps block on it.
 - BC pretrain must complete before any BC transfer arm (yours) — run it Day-1 morning alongside infra.
 - Offline-assisted results live in the **separate budget category** (report offline dataset size + pretraining updates; no env-step-parity claims vs pure online).
-- Tiers 2–4 are stretch: if Modal burn or time runs short, cut stretch before touching any core 5-seed sweep.
+- Tiers 2–4 and transfer warm-starts are stretch: if Modal burn or time runs short, cut stretch before touching any core 5-seed sweep.
