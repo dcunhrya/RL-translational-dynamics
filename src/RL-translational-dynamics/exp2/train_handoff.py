@@ -132,6 +132,7 @@ def build_metadata(args: Args, phase: str, switch_step: int, switched: bool) -> 
         metadata["starter_policy_init"] = "random"
         metadata["starter_policy_source"] = "none"
         metadata["starter_policy_path"] = None
+    metadata["total_timesteps"] = args.total_timesteps
     return metadata
 
 

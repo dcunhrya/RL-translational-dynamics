@@ -201,6 +201,7 @@ def base_metadata(args: Args, phase: str) -> dict:
         "value_init": "random" if has_bc_policy else "native",
         "value_source": "none",
         "bc_policy_path": args.bc_policy_path,
+        "total_timesteps": args.total_timesteps,
     }
 
 

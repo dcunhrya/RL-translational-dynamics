@@ -269,6 +269,7 @@ def base_metadata(args: Args, phase: str) -> dict:
         "bc_policy_path": args.bc_policy_path,
         "bc_anchor_interval": args.bc_anchor_interval,
         "easy_env_mode": args.easy_env_mode,
+        "total_timesteps": args.total_timesteps,
     }
 
 

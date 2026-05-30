@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ class RunKey:
     algorithm: str
     env: str
     seed: int
+    horizon_steps: int | None = None
     policy_source: str | None = None
     value_init: str | None = None
     bc_anchor_interval: int | None = None
@@ -99,13 +101,23 @@ def auc_from_series(series: list[tuple[int, float]]) -> tuple[float | None, floa
     return auc, auc / horizon
 
 
-def run_key_from_rows(rows: list[dict]) -> RunKey | None:
+def horizon_from_run_dir(run_dir: Path) -> int | None:
+    match = re.search(r"__(\d+)k__", run_dir.name)
+    if match:
+        return int(match.group(1)) * 1000
+    return None
+
+
+def run_key_from_rows(rows: list[dict], run_dir: Path) -> RunKey | None:
     if not rows:
         return None
     first = rows[0]
     env = str(first.get("env", "unknown"))
     seed = int(first.get("seed", -1))
     algorithm = str(first.get("algorithm", "unknown"))
+    horizon_steps = first.get("total_timesteps") or horizon_from_run_dir(run_dir)
+    if horizon_steps is not None:
+        horizon_steps = int(horizon_steps)
     policy_source = first.get("policy_source") or first.get("starter_policy_source")
     value_init = first.get("value_init")
     bc_anchor_interval = first.get("bc_anchor_interval")
@@ -115,6 +127,7 @@ def run_key_from_rows(rows: list[dict]) -> RunKey | None:
         algorithm=algorithm,
         env=env,
         seed=seed,
+        horizon_steps=horizon_steps,
         policy_source=str(policy_source) if policy_source is not None else None,
         value_init=str(value_init) if value_init is not None else None,
         bc_anchor_interval=bc_anchor_interval,
@@ -128,7 +141,7 @@ def summarize_run(run_dir: Path) -> RunSummary | None:
     rows = load_metrics(metrics_path)
     if not rows:
         return None
-    key = run_key_from_rows(rows)
+    key = run_key_from_rows(rows, run_dir)
     if key is None:
         return None
     series = eval_series(rows)
@@ -179,8 +192,12 @@ def bootstrap_ci(values: list[float], samples: int, rng: np.random.Generator) ->
 
 def method_label(key: RunKey) -> str:
     if key.algorithm == "bc_anchor_sac":
-        return f"BC-anchor SAC K={key.bc_anchor_interval}"
-    return key.algorithm.replace("_", " -> ").upper()
+        label = f"BC-anchor SAC K={key.bc_anchor_interval}"
+    else:
+        label = key.algorithm.replace("_", " -> ").upper()
+    if key.horizon_steps and key.horizon_steps != 500_000:
+        label = f"{label} ({key.horizon_steps // 1000}k)"
+    return label
 
 
 def aggregate(runs: dict[RunKey, RunSummary], bootstrap_samples: int, seed: int) -> list[dict]:
@@ -190,6 +207,7 @@ def aggregate(runs: dict[RunKey, RunSummary], bootstrap_samples: int, seed: int)
         group_key = (
             summary.key.env,
             summary.key.algorithm,
+            summary.key.horizon_steps,
             summary.key.policy_source,
             summary.key.value_init,
             summary.key.bc_anchor_interval,
@@ -197,7 +215,7 @@ def aggregate(runs: dict[RunKey, RunSummary], bootstrap_samples: int, seed: int)
         grouped[group_key].append(summary)
 
     rows = []
-    for (env, algorithm, policy_source, value_init, bc_anchor_interval), summaries in sorted(grouped.items()):
+    for (env, algorithm, horizon_steps, policy_source, value_init, bc_anchor_interval), summaries in sorted(grouped.items()):
         final_values = [summary.final_eval for summary in summaries if summary.final_eval is not None]
         auc_values = [summary.normalized_auc for summary in summaries if summary.normalized_auc is not None]
         final_mean, final_lo, final_hi = bootstrap_ci(final_values, bootstrap_samples, rng)
@@ -206,6 +224,7 @@ def aggregate(runs: dict[RunKey, RunSummary], bootstrap_samples: int, seed: int)
             {
                 "env": env,
                 "algorithm": algorithm,
+                "horizon_steps": horizon_steps,
                 "policy_source": policy_source,
                 "value_init": value_init,
                 "bc_anchor_interval": bc_anchor_interval,
@@ -373,6 +392,8 @@ def write_outputs(args: argparse.Namespace, runs: dict[RunKey, RunSummary]) -> N
         method = row["algorithm"]
         if row["bc_anchor_interval"]:
             method = f"{method} K={row['bc_anchor_interval']}"
+        if row["horizon_steps"] and row["horizon_steps"] != 500_000:
+            method = f"{method} ({row['horizon_steps'] // 1000}k)"
         final = "n/a" if row["final_return_mean"] is None else (
             f"{row['final_return_mean']:.2f} [{row['final_return_ci_low']:.2f}, {row['final_return_ci_high']:.2f}]"
         )
