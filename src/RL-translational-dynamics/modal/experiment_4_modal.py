@@ -570,17 +570,21 @@ def run_easy_sac_to_sac(
     cpu=2.0,
     memory=8192,
 )
-def summarize_results() -> None:
+def summarize_results(
+    results_dir: str = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task"),
+    output_dir: str = str(REMOTE_RESULTS_DIR / "processed" / "abhinav_task"),
+    notes_path: str = str(REMOTE_RESULTS_DIR / "processed" / "abhinav_task" / "results.md"),
+) -> None:
     run_command(
         [
             "python",
             str(REMOTE_SRC_DIR / "exp4" / "summarize_experiment_4.py"),
             "--results-dir",
-            str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task"),
+            results_dir,
             "--output-dir",
-            str(REMOTE_RESULTS_DIR / "processed" / "abhinav_task"),
+            output_dir,
             "--notes-path",
-            str(REMOTE_RESULTS_DIR / "processed" / "abhinav_task" / "results.md"),
+            notes_path,
         ]
     )
     results_volume.commit()
@@ -773,6 +777,13 @@ def main(
 ) -> None:
     if mode == "summarize":
         summarize_results.remote()
+        return
+    if mode == "summarize-interleaved":
+        summarize_results.remote(
+            results_dir=str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "interleaved_bc"),
+            output_dir=str(REMOTE_RESULTS_DIR / "processed" / "abhinav_task" / "interleaved_bc"),
+            notes_path=str(REMOTE_RESULTS_DIR / "processed" / "abhinav_task" / "interleaved_bc" / "results.md"),
+        )
         return
 
     if mode == "easy-pretrain":
