@@ -679,15 +679,6 @@ def spawn_long(long_timesteps: int, eval_interval: int, num_eval_episodes: int, 
 
 
 def spawn_easy_transfer(total_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
-    for seed in STRETCH_SEEDS:
-        run_easy_sac_pretrain.remote(
-            env_id="Hopper-v4",
-            seed=seed,
-            total_timesteps=total_timesteps,
-            eval_interval=eval_interval,
-            num_eval_episodes=num_eval_episodes,
-            wandb_project=wandb_project,
-        )
     jobs = []
     save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "easy_transfer")
     for seed in STRETCH_SEEDS:
@@ -721,6 +712,35 @@ def main(
         summarize_results.remote()
         return
 
+    if mode == "easy-pretrain":
+        jobs = [
+            run_easy_sac_pretrain.spawn(
+                env_id="Hopper-v4",
+                seed=seed,
+                total_timesteps=total_timesteps,
+                eval_interval=eval_interval,
+                num_eval_episodes=num_eval_episodes,
+                wandb_project=wandb_project,
+            )
+            for seed in STRETCH_SEEDS
+        ]
+        print(f"Spawned {len(jobs)} easy-SAC pretraining jobs.")
+        return
+
+    if mode == "tier2-pretrain":
+        jobs = [
+            run_awac_pretrain.spawn(
+                env_id=env_id,
+                total_updates=awac_updates,
+                eval_interval=eval_interval,
+                num_eval_episodes=num_eval_episodes,
+                wandb_project=wandb_project,
+            )
+            for env_id in ENVS
+        ]
+        print(f"Spawned {len(jobs)} AWAC pretraining jobs.")
+        return
+
     if mode in {"core", "interleaved", "long", "all"} and not skip_bc_pretrain:
         for env_id in ENVS:
             run_bc_pretrain.remote(
@@ -738,9 +758,19 @@ def main(
         jobs.extend(spawn_interleaved(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
     if mode in {"long", "all"}:
         jobs.extend(spawn_long(long_timesteps, eval_interval, num_eval_episodes, wandb_project))
-    if mode in {"easy", "all"}:
+    if mode == "all":
+        for seed in STRETCH_SEEDS:
+            run_easy_sac_pretrain.remote(
+                env_id="Hopper-v4",
+                seed=seed,
+                total_timesteps=total_timesteps,
+                eval_interval=eval_interval,
+                num_eval_episodes=num_eval_episodes,
+                wandb_project=wandb_project,
+            )
+    if mode in {"easy", "easy-transfer", "all"}:
         jobs.extend(spawn_easy_transfer(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
-    if mode in {"tier2", "all"}:
+    if mode == "all":
         for env_id in ENVS:
             run_awac_pretrain.remote(
                 env_id=env_id,
@@ -749,6 +779,7 @@ def main(
                 num_eval_episodes=num_eval_episodes,
                 wandb_project=wandb_project,
             )
+    if mode in {"tier2", "tier2-transfer", "all"}:
         save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "tier2_awac")
         for env_id in ENVS:
             for seed in STRETCH_SEEDS:
