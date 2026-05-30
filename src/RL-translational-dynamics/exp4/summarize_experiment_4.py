@@ -38,18 +38,21 @@ class RunSummary:
     has_checkpoint: bool
 
 
-SUMMARY_LINE_MARKERS = (
+SUMMARY_ALWAYS_LINE_MARKERS = (
     '"eval_return_mean"',
     '"switch_step"',
     '"bc_distill_loss"',
     '"bc_anchor_loss"',
     '"policy_retention_action_mse"',
     '"policy_retention_approx_kl"',
+)
+SUMMARY_SAMPLED_LINE_MARKERS = (
     '"ppo_explained_variance"',
     '"sac_qf1_mean"',
     '"sac_qf2_mean"',
     '"awac_critic_loss"',
 )
+SAMPLED_MARKER_STRIDE = 5_000
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,8 +73,11 @@ def load_metrics(path: Path) -> list[dict]:
             line = line.strip()
             if not line:
                 continue
-            if rows and not any(marker in line for marker in SUMMARY_LINE_MARKERS):
-                continue
+            if rows:
+                has_always_marker = any(marker in line for marker in SUMMARY_ALWAYS_LINE_MARKERS)
+                has_sampled_marker = any(marker in line for marker in SUMMARY_SAMPLED_LINE_MARKERS)
+                if not has_always_marker and not (has_sampled_marker and line_number % SAMPLED_MARKER_STRIDE == 0):
+                    continue
             try:
                 rows.append(json.loads(line))
             except json.JSONDecodeError as exc:
