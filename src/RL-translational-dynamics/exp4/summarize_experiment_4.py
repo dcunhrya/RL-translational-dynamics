@@ -251,12 +251,27 @@ def plot_learning_curves(runs: dict[RunKey, RunSummary], output_dir: Path) -> Pa
     axes = axes.flatten()
     for ax, env in zip(axes, envs):
         env_runs = [summary for summary in runs.values() if summary.key.env == env]
-        methods = sorted({(summary.key.algorithm, summary.key.bc_anchor_interval) for summary in env_runs})
-        for algorithm, anchor_interval in methods:
+        methods = sorted(
+            {
+                (
+                    summary.key.algorithm,
+                    summary.key.horizon_steps,
+                    summary.key.policy_source,
+                    summary.key.value_init,
+                    summary.key.bc_anchor_interval,
+                )
+                for summary in env_runs
+            }
+        )
+        for algorithm, horizon_steps, policy_source, value_init, anchor_interval in methods:
             summaries = [
                 summary
                 for summary in env_runs
-                if summary.key.algorithm == algorithm and summary.key.bc_anchor_interval == anchor_interval
+                if summary.key.algorithm == algorithm
+                and summary.key.horizon_steps == horizon_steps
+                and summary.key.policy_source == policy_source
+                and summary.key.value_init == value_init
+                and summary.key.bc_anchor_interval == anchor_interval
             ]
             per_seed = []
             switch_steps = []
