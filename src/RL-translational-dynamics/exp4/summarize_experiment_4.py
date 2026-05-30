@@ -35,6 +35,20 @@ class RunSummary:
     has_checkpoint: bool
 
 
+SUMMARY_LINE_MARKERS = (
+    '"eval_return_mean"',
+    '"switch_step"',
+    '"bc_distill_loss"',
+    '"bc_anchor_loss"',
+    '"policy_retention_action_mse"',
+    '"policy_retention_approx_kl"',
+    '"ppo_explained_variance"',
+    '"sac_qf1_mean"',
+    '"sac_qf2_mean"',
+    '"awac_critic_loss"',
+)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize Abhinav/Experiment 4 offline-assisted runs.")
     parser.add_argument("--results-dir", type=Path, default=Path("results/raw/abhinav_task"))
@@ -51,6 +65,8 @@ def load_metrics(path: Path) -> list[dict]:
         for line_number, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
+                continue
+            if rows and not any(marker in line for marker in SUMMARY_LINE_MARKERS):
                 continue
             try:
                 rows.append(json.loads(line))
