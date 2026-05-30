@@ -4,6 +4,7 @@ import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -61,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+@lru_cache(maxsize=None)
 def load_metrics(path: Path) -> list[dict]:
     rows = []
     with path.open("r", encoding="utf-8") as f:
