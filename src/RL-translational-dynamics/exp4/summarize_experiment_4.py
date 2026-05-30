@@ -175,7 +175,7 @@ def collect_runs(results_dir: Path) -> dict[RunKey, RunSummary]:
             grouped[summary.key].append(summary)
     latest = {}
     for key, summaries in grouped.items():
-        latest[key] = max(summaries, key=lambda summary: summary.run_dir.stat().st_mtime)
+        latest[key] = max(summaries, key=lambda summary: (summary.max_env_steps, summary.run_dir.stat().st_mtime))
     return latest
 
 
