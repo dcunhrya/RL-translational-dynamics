@@ -91,6 +91,8 @@ python src/RL-translational-dynamics/exp4/check_starter_compatibility.py \
 
 ## Modal Launches
 
+Every batched launch defaults to `--max-parallel-gpu 10`, matching the project GPU cap. Lower it explicitly if the shared Modal workspace is busy.
+
 Core Tier 1, after BC pretraining:
 
 ```shell
@@ -119,7 +121,12 @@ Gated AWAC Tier 2:
 
 ```shell
 modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
-  --mode tier2 \
+  --mode tier2-pretrain
+```
+
+```shell
+modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
+  --mode tier2-transfer \
   --total-timesteps 500000
 ```
 
@@ -127,7 +134,21 @@ Stretch easy-environment transfer:
 
 ```shell
 modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
-  --mode easy \
+  --mode easy-pretrain \
+  --total-timesteps 500000
+```
+
+```shell
+modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
+  --mode easy-transfer \
+  --total-timesteps 500000
+```
+
+Walker2d best-K interleaved BC follow-up:
+
+```shell
+modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
+  --mode interleaved-walker \
   --total-timesteps 500000
 ```
 
@@ -145,6 +166,14 @@ Summarize after jobs finish:
 ```shell
 modal run src/RL-translational-dynamics/modal/experiment_4_modal.py --mode summarize
 ```
+
+The final Modal artifacts are written under `/processed/abhinav_task` on the `herschethan` volume:
+
+- `summary.json`
+- `results.md`
+- `phase_marked_learning_curves.png`
+- `policy_retention.png`
+- `value_quality.png`
 
 Local summarization after fetching Modal results:
 
