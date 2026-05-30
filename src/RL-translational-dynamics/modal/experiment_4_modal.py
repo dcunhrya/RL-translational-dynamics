@@ -722,19 +722,21 @@ def main(
     eval_interval: int = 5_000,
     num_eval_episodes: int = 5,
     wandb_project: str = "rl-translational-dynamics",
+    skip_bc_pretrain: bool = False,
 ) -> None:
     if mode == "summarize":
         summarize_results.remote()
         return
 
-    for env_id in ENVS:
-        run_bc_pretrain.remote(
-            env_id=env_id,
-            total_updates=bc_updates,
-            eval_interval=eval_interval,
-            num_eval_episodes=num_eval_episodes,
-            wandb_project=wandb_project,
-        )
+    if mode in {"core", "interleaved", "long", "all"} and not skip_bc_pretrain:
+        for env_id in ENVS:
+            run_bc_pretrain.remote(
+                env_id=env_id,
+                total_updates=bc_updates,
+                eval_interval=eval_interval,
+                num_eval_episodes=num_eval_episodes,
+                wandb_project=wandb_project,
+            )
 
     jobs = []
     if mode in {"core", "all"}:
