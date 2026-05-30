@@ -586,114 +586,147 @@ def summarize_results() -> None:
     results_volume.commit()
 
 
-def spawn_core(total_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
-    jobs = []
+def run_specs_batched(specs: list[tuple], max_parallel_gpu: int) -> None:
+    if max_parallel_gpu < 1:
+        raise ValueError("max_parallel_gpu must be >= 1.")
+    for batch_start in range(0, len(specs), max_parallel_gpu):
+        batch = specs[batch_start : batch_start + max_parallel_gpu]
+        calls = [fn.spawn(**kwargs) for fn, kwargs in batch]
+        print(f"Started batch {batch_start // max_parallel_gpu + 1}: {len(calls)} GPU jobs.")
+        for call in calls:
+            call.get()
+        print(f"Completed batch {batch_start // max_parallel_gpu + 1}.")
+
+
+def core_specs(total_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
+    specs = []
     save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "tier1")
     for env_id in ENVS:
         for seed in SEEDS:
-            jobs.append(
-                run_bc_to_sac.spawn(
-                    env_id=env_id,
-                    seed=seed,
-                    total_timesteps=total_timesteps,
-                    eval_interval=eval_interval,
-                    num_eval_episodes=num_eval_episodes,
-                    bc_anchor_interval=0,
-                    save_dir=save_dir,
-                    wandb_project=wandb_project,
+            specs.append(
+                (
+                    run_bc_to_sac,
+                    {
+                        "env_id": env_id,
+                        "seed": seed,
+                        "total_timesteps": total_timesteps,
+                        "eval_interval": eval_interval,
+                        "num_eval_episodes": num_eval_episodes,
+                        "bc_anchor_interval": 0,
+                        "save_dir": save_dir,
+                        "wandb_project": wandb_project,
+                    },
                 )
             )
-            jobs.append(
-                run_bc_to_ppo.spawn(
-                    env_id=env_id,
-                    seed=seed,
-                    total_timesteps=total_timesteps,
-                    eval_interval=eval_interval,
-                    num_eval_episodes=num_eval_episodes,
-                    save_dir=save_dir,
-                    wandb_project=wandb_project,
+            specs.append(
+                (
+                    run_bc_to_ppo,
+                    {
+                        "env_id": env_id,
+                        "seed": seed,
+                        "total_timesteps": total_timesteps,
+                        "eval_interval": eval_interval,
+                        "num_eval_episodes": num_eval_episodes,
+                        "save_dir": save_dir,
+                        "wandb_project": wandb_project,
+                    },
                 )
             )
-            jobs.append(
-                run_bc_sac_ppo.spawn(
-                    env_id=env_id,
-                    seed=seed,
-                    total_timesteps=total_timesteps,
-                    eval_interval=eval_interval,
-                    num_eval_episodes=num_eval_episodes,
-                    save_dir=save_dir,
-                    wandb_project=wandb_project,
+            specs.append(
+                (
+                    run_bc_sac_ppo,
+                    {
+                        "env_id": env_id,
+                        "seed": seed,
+                        "total_timesteps": total_timesteps,
+                        "eval_interval": eval_interval,
+                        "num_eval_episodes": num_eval_episodes,
+                        "save_dir": save_dir,
+                        "wandb_project": wandb_project,
+                    },
                 )
             )
-    return jobs
+    return specs
 
 
-def spawn_interleaved(total_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
-    jobs = []
+def interleaved_specs(total_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
+    specs = []
     save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "interleaved_bc")
     for interval in INTERLEAVED_K:
         for seed in STRETCH_SEEDS:
-            jobs.append(
-                run_bc_to_sac.spawn(
-                    env_id="Hopper-v4",
-                    seed=seed,
-                    total_timesteps=total_timesteps,
-                    eval_interval=eval_interval,
-                    num_eval_episodes=num_eval_episodes,
-                    bc_anchor_interval=interval,
-                    save_dir=save_dir,
-                    wandb_project=wandb_project,
+            specs.append(
+                (
+                    run_bc_to_sac,
+                    {
+                        "env_id": "Hopper-v4",
+                        "seed": seed,
+                        "total_timesteps": total_timesteps,
+                        "eval_interval": eval_interval,
+                        "num_eval_episodes": num_eval_episodes,
+                        "bc_anchor_interval": interval,
+                        "save_dir": save_dir,
+                        "wandb_project": wandb_project,
+                    },
                 )
             )
-    return jobs
+    return specs
 
 
-def spawn_long(long_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
-    jobs = []
+def long_specs(long_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
+    specs = []
     save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "long_horizon")
     for seed in STRETCH_SEEDS:
-        jobs.append(
-            run_bc_to_sac.spawn(
-                env_id="Hopper-v4",
-                seed=seed,
-                total_timesteps=long_timesteps,
-                eval_interval=eval_interval,
-                num_eval_episodes=num_eval_episodes,
-                bc_anchor_interval=0,
-                save_dir=save_dir,
-                wandb_project=wandb_project,
+        specs.append(
+            (
+                run_bc_to_sac,
+                {
+                    "env_id": "Hopper-v4",
+                    "seed": seed,
+                    "total_timesteps": long_timesteps,
+                    "eval_interval": eval_interval,
+                    "num_eval_episodes": num_eval_episodes,
+                    "bc_anchor_interval": 0,
+                    "save_dir": save_dir,
+                    "wandb_project": wandb_project,
+                },
             )
         )
-        jobs.append(
-            run_bc_to_ppo.spawn(
-                env_id="Hopper-v4",
-                seed=seed,
-                total_timesteps=long_timesteps,
-                eval_interval=eval_interval,
-                num_eval_episodes=num_eval_episodes,
-                save_dir=save_dir,
-                wandb_project=wandb_project,
+        specs.append(
+            (
+                run_bc_to_ppo,
+                {
+                    "env_id": "Hopper-v4",
+                    "seed": seed,
+                    "total_timesteps": long_timesteps,
+                    "eval_interval": eval_interval,
+                    "num_eval_episodes": num_eval_episodes,
+                    "save_dir": save_dir,
+                    "wandb_project": wandb_project,
+                },
             )
         )
-    return jobs
+    return specs
 
 
-def spawn_easy_transfer(total_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
-    jobs = []
+def easy_transfer_specs(total_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
+    specs = []
     save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "easy_transfer")
     for seed in STRETCH_SEEDS:
-        jobs.append(
-            run_easy_sac_to_sac.spawn(
-                env_id="Hopper-v4",
-                seed=seed,
-                total_timesteps=total_timesteps,
-                eval_interval=eval_interval,
-                num_eval_episodes=num_eval_episodes,
-                save_dir=save_dir,
-                wandb_project=wandb_project,
+        specs.append(
+            (
+                run_easy_sac_to_sac,
+                {
+                    "env_id": "Hopper-v4",
+                    "seed": seed,
+                    "total_timesteps": total_timesteps,
+                    "eval_interval": eval_interval,
+                    "num_eval_episodes": num_eval_episodes,
+                    "save_dir": save_dir,
+                    "wandb_project": wandb_project,
+                },
             )
         )
-    return jobs
+    return specs
 
 
 @app.local_entrypoint()
@@ -707,38 +740,45 @@ def main(
     num_eval_episodes: int = 5,
     wandb_project: str = "rl-translational-dynamics",
     skip_bc_pretrain: bool = False,
+    max_parallel_gpu: int = 10,
 ) -> None:
     if mode == "summarize":
         summarize_results.remote()
         return
 
     if mode == "easy-pretrain":
-        jobs = [
-            run_easy_sac_pretrain.spawn(
-                env_id="Hopper-v4",
-                seed=seed,
-                total_timesteps=total_timesteps,
-                eval_interval=eval_interval,
-                num_eval_episodes=num_eval_episodes,
-                wandb_project=wandb_project,
+        specs = [
+            (
+                run_easy_sac_pretrain,
+                {
+                    "env_id": "Hopper-v4",
+                    "seed": seed,
+                    "total_timesteps": total_timesteps,
+                    "eval_interval": eval_interval,
+                    "num_eval_episodes": num_eval_episodes,
+                    "wandb_project": wandb_project,
+                },
             )
             for seed in STRETCH_SEEDS
         ]
-        print(f"Spawned {len(jobs)} easy-SAC pretraining jobs.")
+        run_specs_batched(specs, max_parallel_gpu)
         return
 
     if mode == "tier2-pretrain":
-        jobs = [
-            run_awac_pretrain.spawn(
-                env_id=env_id,
-                total_updates=awac_updates,
-                eval_interval=eval_interval,
-                num_eval_episodes=num_eval_episodes,
-                wandb_project=wandb_project,
+        specs = [
+            (
+                run_awac_pretrain,
+                {
+                    "env_id": env_id,
+                    "total_updates": awac_updates,
+                    "eval_interval": eval_interval,
+                    "num_eval_episodes": num_eval_episodes,
+                    "wandb_project": wandb_project,
+                },
             )
             for env_id in ENVS
         ]
-        print(f"Spawned {len(jobs)} AWAC pretraining jobs.")
+        run_specs_batched(specs, max_parallel_gpu)
         return
 
     if mode in {"core", "interleaved", "long", "all"} and not skip_bc_pretrain:
@@ -751,13 +791,13 @@ def main(
                 wandb_project=wandb_project,
             )
 
-    jobs = []
+    specs = []
     if mode in {"core", "all"}:
-        jobs.extend(spawn_core(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
+        specs.extend(core_specs(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
     if mode in {"interleaved", "all"}:
-        jobs.extend(spawn_interleaved(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
+        specs.extend(interleaved_specs(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
     if mode in {"long", "all"}:
-        jobs.extend(spawn_long(long_timesteps, eval_interval, num_eval_episodes, wandb_project))
+        specs.extend(long_specs(long_timesteps, eval_interval, num_eval_episodes, wandb_project))
     if mode == "all":
         for seed in STRETCH_SEEDS:
             run_easy_sac_pretrain.remote(
@@ -769,7 +809,7 @@ def main(
                 wandb_project=wandb_project,
             )
     if mode in {"easy", "easy-transfer", "all"}:
-        jobs.extend(spawn_easy_transfer(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
+        specs.extend(easy_transfer_specs(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
     if mode == "all":
         for env_id in ENVS:
             run_awac_pretrain.remote(
@@ -783,28 +823,34 @@ def main(
         save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "tier2_awac")
         for env_id in ENVS:
             for seed in STRETCH_SEEDS:
-                jobs.append(
-                    run_awac_to_sac.spawn(
-                        env_id=env_id,
-                        seed=seed,
-                        total_timesteps=total_timesteps,
-                        eval_interval=eval_interval,
-                        num_eval_episodes=num_eval_episodes,
-                        save_dir=save_dir,
-                        wandb_project=wandb_project,
+                specs.append(
+                    (
+                        run_awac_to_sac,
+                        {
+                            "env_id": env_id,
+                            "seed": seed,
+                            "total_timesteps": total_timesteps,
+                            "eval_interval": eval_interval,
+                            "num_eval_episodes": num_eval_episodes,
+                            "save_dir": save_dir,
+                            "wandb_project": wandb_project,
+                        },
                     )
                 )
-                jobs.append(
-                    run_awac_to_ppo.spawn(
-                        env_id=env_id,
-                        seed=seed,
-                        total_timesteps=total_timesteps,
-                        eval_interval=eval_interval,
-                        num_eval_episodes=num_eval_episodes,
-                        save_dir=save_dir,
-                        wandb_project=wandb_project,
+                specs.append(
+                    (
+                        run_awac_to_ppo,
+                        {
+                            "env_id": env_id,
+                            "seed": seed,
+                            "total_timesteps": total_timesteps,
+                            "eval_interval": eval_interval,
+                            "num_eval_episodes": num_eval_episodes,
+                            "save_dir": save_dir,
+                            "wandb_project": wandb_project,
+                        },
                     )
                 )
 
-    print(f"Spawned {len(jobs)} Abhinav experiment jobs after BC pretraining.")
-    print("Training jobs are detached Modal calls; use mode='summarize' after they finish.")
+    print(f"Running {len(specs)} Abhinav experiment jobs in batches of at most {max_parallel_gpu}.")
+    run_specs_batched(specs, max_parallel_gpu)
