@@ -672,6 +672,34 @@ def interleaved_specs(total_timesteps: int, eval_interval: int, num_eval_episode
     return specs
 
 
+def interleaved_walker_specs(
+    total_timesteps: int,
+    eval_interval: int,
+    num_eval_episodes: int,
+    wandb_project: str,
+    bc_anchor_interval: int,
+) -> list:
+    specs = []
+    save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "interleaved_bc_walker")
+    for seed in STRETCH_SEEDS:
+        specs.append(
+            (
+                run_bc_to_sac,
+                {
+                    "env_id": "Walker2d-v4",
+                    "seed": seed,
+                    "total_timesteps": total_timesteps,
+                    "eval_interval": eval_interval,
+                    "num_eval_episodes": num_eval_episodes,
+                    "bc_anchor_interval": bc_anchor_interval,
+                    "save_dir": save_dir,
+                    "wandb_project": wandb_project,
+                },
+            )
+        )
+    return specs
+
+
 def long_specs(long_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
     specs = []
     save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "long_horizon")
@@ -741,6 +769,7 @@ def main(
     wandb_project: str = "rl-translational-dynamics",
     skip_bc_pretrain: bool = False,
     max_parallel_gpu: int = 10,
+    interleaved_walker_interval: int = 50_000,
 ) -> None:
     if mode == "summarize":
         summarize_results.remote()
@@ -781,7 +810,7 @@ def main(
         run_specs_batched(specs, max_parallel_gpu)
         return
 
-    if mode in {"core", "interleaved", "long", "all"} and not skip_bc_pretrain:
+    if mode in {"core", "interleaved", "interleaved-walker", "long", "all"} and not skip_bc_pretrain:
         for env_id in ENVS:
             run_bc_pretrain.remote(
                 env_id=env_id,
@@ -796,6 +825,16 @@ def main(
         specs.extend(core_specs(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
     if mode in {"interleaved", "all"}:
         specs.extend(interleaved_specs(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
+    if mode in {"interleaved-walker", "all"}:
+        specs.extend(
+            interleaved_walker_specs(
+                total_timesteps,
+                eval_interval,
+                num_eval_episodes,
+                wandb_project,
+                interleaved_walker_interval,
+            )
+        )
     if mode in {"long", "all"}:
         specs.extend(long_specs(long_timesteps, eval_interval, num_eval_episodes, wandb_project))
     if mode == "all":
