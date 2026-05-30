@@ -371,7 +371,13 @@ def main() -> None:
     env_slug = args.env_id.replace("-v", "_v").replace("-", "_")
     horizon_k = int(args.total_timesteps / 1000)
     algo = algorithm_name(args)
-    run_name = f"{algo}__{env_slug}__seed_{args.seed}__{horizon_k}k__{int(time.time())}"
+    schedule_parts = []
+    if args.bc_anchor_interval > 0:
+        schedule_parts.append(f"anchor_{args.bc_anchor_interval}")
+    if args.easy_env_mode != "none":
+        schedule_parts.append(f"easy_{args.easy_env_mode}")
+    schedule_suffix = "__" + "__".join(schedule_parts) if schedule_parts else ""
+    run_name = f"{algo}__{env_slug}__seed_{args.seed}{schedule_suffix}__{horizon_k}k__{int(time.time())}"
     save_dir = Path(args.save_dir) / run_name
     save_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = save_dir / "metrics.jsonl"
