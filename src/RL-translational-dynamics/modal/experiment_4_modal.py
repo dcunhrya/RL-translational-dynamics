@@ -66,6 +66,8 @@ def run_command(command: list[str], wandb_project: str | None = None) -> None:
     env = os.environ.copy()
     if wandb_project:
         env["WANDB_PROJECT"] = wandb_project
+    if "WANDB_API_KEY" not in env:
+        env["WANDB_MODE"] = "offline"
     subprocess.run(command, check=True, env=env)
 
 
@@ -78,7 +80,6 @@ def latest_policy(policy_root: Path, prefix: str, policy_filename: str) -> str:
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name(WANDB_SECRET_NAME)],
     volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 4,
     cpu=4.0,
@@ -122,7 +123,6 @@ def run_bc_pretrain(
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name(WANDB_SECRET_NAME)],
     volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 10,
     cpu=4.0,
@@ -190,7 +190,6 @@ def run_bc_to_sac(
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name(WANDB_SECRET_NAME)],
     volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 10,
     cpu=4.0,
@@ -247,7 +246,6 @@ def run_bc_to_ppo(
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name(WANDB_SECRET_NAME)],
     volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 10,
     cpu=4.0,
@@ -310,7 +308,6 @@ def run_bc_sac_ppo(
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name(WANDB_SECRET_NAME)],
     volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 6,
     cpu=4.0,
@@ -354,7 +351,6 @@ def run_awac_pretrain(
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name(WANDB_SECRET_NAME)],
     volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 10,
     cpu=4.0,
@@ -411,7 +407,6 @@ def run_awac_to_sac(
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name(WANDB_SECRET_NAME)],
     volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 10,
     cpu=4.0,
@@ -468,7 +463,6 @@ def run_awac_to_ppo(
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name(WANDB_SECRET_NAME)],
     volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 10,
     cpu=4.0,
@@ -515,7 +509,6 @@ def run_easy_sac_pretrain(
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name(WANDB_SECRET_NAME)],
     volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 10,
     cpu=4.0,
