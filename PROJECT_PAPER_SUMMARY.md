@@ -2,6 +2,29 @@
 
 This document is a self-contained summary of the RL Translational Dynamics project. It is intended to be detailed enough to give to a large language model as source material for writing the full research paper. It consolidates the project motivation, research questions, method design, task assignments, completed experiments, current results, expected outcomes, deviations from those expectations, limitations, and a proposed paper structure.
 
+**Last updated:** after the latest `git pull` on `main` (commits through `57888ef`, including Ryan Modal merge PR #1, Ethan takeaways, and Abhinav task revisions `23aacd0` / `9eb3b79`).
+
+## Repository Status (Latest Git Pull)
+
+The repository is now substantially more complete than the early May pilot phase described in `PROGRESS_UPDATE.md`. Key post-pull state:
+
+| Area | Status |
+|---|---|
+| Ryan Tier-0 slice | **Complete** — 53/53 Modal jobs; static bundle under `experiments/ryan_task/` |
+| Ethan PPO -> SAC slice | **Results documented** — `experiments/ethan_task/results.md` + takeaways; aggregation fix still needed |
+| Abhinav offline / infra slice | **Planned** — task file updated; no `experiments/abhinav_task/` results yet |
+| Early pilots (Exp 0/2/3 @ 100k) | **Complete** — documented in `experiments/experiment_{0,2,3}.md` |
+| Handoff training code | **Merged** — `train_handoff.py`, `handoff_utils.py`, tests, Modal launcher |
+| Ryan analysis pipeline | **Merged** — `scripts/plot_ryan_results.py` builds reports, CSVs, and figures |
+
+Recent commits worth citing in the paper methods section:
+
+- `728f803` / PR #1 (`ryan`): full Ryan experiment infrastructure, `experiments/ryan_task/` bundle, `plot_ryan_results.py`, Modal launcher.
+- `23aacd0` / `9eb3b79`: Abhinav stretch transfer tasks (easy-environment RL pretraining, general starter policy diagnostic).
+- `57888ef`: this paper summary document.
+
+**Important path note:** Ryan Modal runs write to `results/raw/ryan_experiment` on the volume, but the **review-facing bundle** checked into the repo lives at `experiments/ryan_task/` (reports, headline/diagnostic figures). Raw/processed CSV caches under `experiments/ryan_task/raw/` and `processed/` are gitignored; regenerate with `scripts/plot_ryan_results.py` if needed.
+
 ## One-Sentence Project Summary
 
 This project studies whether deep reinforcement learning algorithms should be treated as training phases rather than fixed end-to-end choices, asking whether sequencing algorithms such as PPO and SAC under matched environment-step budgets can improve sample efficiency, stability, or final return by exploiting phase-specific strengths.
@@ -180,6 +203,46 @@ The central C1 question is:
 
 PPO -> SAC naturally involves replay data because SAC can train off-policy from stored transitions.
 
+## Implementation Ground Truth (Verified Handoff Pipeline)
+
+The design spec (`docs/superpowers/specs/2026-05-26-rl-sequencing-transfer-mechanism-design.md`) documents what the code actually does. This matters for the paper because policy transfer is **not** direct weight loading.
+
+### SAC -> PPO (`train_handoff.py`)
+
+1. Train SAC until `switch_step = int(total_timesteps × switch_fraction)` (50% -> 250k of 500k).
+2. PPO actor is a **fresh random init** (SAC and PPO actor architectures differ).
+3. **500 steps** of behavioral distillation: MSE between PPO action mean and SAC deterministic actions on replay states (`distill_lr=1e-3`).
+4. **Value warm-up** depends on `value_init`:
+   - `random`: skip source-aligned warm-up; PPO uses normal initialization.
+   - `self-warmup`: 2 PPO rollout iterations, critic-only, fitting PPO's own GAE returns.
+   - `source-aligned`: regress PPO value toward `E_{a~pi_distilled}[min(Q1,Q2)(s,a)]` on replay states; log `warmup_loss`; fall back to self-warmup if not converged.
+5. Full PPO with a **fresh optimizer** (no Adam state carried from SAC).
+
+### PPO -> SAC (`train_reverse_handoff.py`)
+
+1. Train PPO to `switch_step`, logging transitions into a replay buffer.
+2. SAC actor fresh random init -> **500-step distillation** toward PPO deterministic actions.
+3. **Value warm-up** depends on `value_init`:
+   - `random`: skip critic warm-up.
+   - `self-warmup`: 1000 Bellman critic-warm-up steps on replay (existing protocol).
+   - `source-aligned`: Q initialized from PPO trajectory reward-to-go (Monte Carlo), not misspecified `V(s)+r`.
+4. Full SAC training.
+
+### Architecture mismatch (why distillation is mandatory)
+
+- SAC actor: 256x256 ReLU, state-dependent mean and log-std heads.
+- PPO actor: 64x64 Tanh, state-independent `actor_logstd` parameter.
+- No shared actor class; weight loading between SAC and PPO actors is impossible.
+
+### Diagnostic suite logged on spine arms
+
+Per `scripts/plot_ryan_results.py` and the Ryan smoke gate:
+
+- Policy retention: `handoff_action_mse`, `handoff_action_kl_proxy`
+- Value quality: `value_loss_at_handoff`, `source_value_warmup_loss_*`, `ppo_explained_variance`
+- PPO health: advantage mean/std, approx KL, clip fraction, policy/value loss
+- Phase markers: `sac | distill | value_warmup | ppo | sac_critic_warmup | bc_anchor | adaptive_switch`
+
 ## Experimental Design
 
 ## Environments
@@ -256,6 +319,44 @@ Current status:
 
 Completed. All 53/53 Ryan jobs are included in the generated report.
 
+Infrastructure (from `experiments/ryan_experiment.md` and merged code):
+
+- Modal app: `src/RL-translational-dynamics/modal/ryan_modal.py` (L4 or A10G via `RYAN_MODAL_GPU`).
+- Smoke gate: 50k steps, 1 seed per arm, before full sweep.
+- Full launch: 53 jobs (10 SAC + 10 PPO + 30 SAC->PPO value arms + 3 SAC@1M Hopper).
+- W&B project: `rl-translational-dynamics`; groups `ryan_full__*`, `ryan_long_horizon__*`.
+- Bundle builder: `scripts/plot_ryan_results.py` -> auto-writes `ryan_results.md`, processed CSVs, headline/diagnostic PDFs/PNGs.
+
+Bundle metadata (`experiments/ryan_task/processed/bundle_summary.json`):
+
+- `53/53` runs included.
+- `2610` eval curve rows, `1782` diagnostic rows.
+- Headline figures: learning curves, AUC, final return, value-init deltas, Hopper SAC long-horizon.
+
+Average rank across methods (`rank_summary.csv`, lower is better):
+
+| Environment | Metric | SAC | SAC->PPO (best handoff) | PPO |
+|---|---:|---:|---:|
+| Hopper-v4 | AUC | 1.0 | 2.8 (random V) | 5.0 |
+| Walker2d-v4 | AUC | 1.0 | 2.8-3.0 | 5.0 |
+| Hopper-v4 | Final return | 1.0 | 3.0-4.0 | 3.8 |
+| Walker2d-v4 | Final return | 1.0 | 3.2-3.4 | 4.2 |
+
+Hopper SAC long-horizon check (seeds 0-2, 1M steps):
+
+| Seed | Final return @ 1M | Normalized AUC (approx.) |
+|---:|---:|---:|
+| 0 | 3307.1 | 2553.3 |
+| 1 | 3326.8 | 1725.6 |
+| 2 | 3323.6 | 2066.2 |
+
+Compared to Ryan's 500k SAC Hopper mean final return **2895.6**, SAC continues gaining with additional budget. This supports the narrative that switching from SAC to PPO at 250k sacrifices a still-productive learner.
+
+Handoff transient note (`handoff_transients.csv`):
+
+- On Hopper, several SAC->PPO runs show high pre-handoff eval return (often 3000+) but post-handoff returns near PPO-scale in the aggregate arm summaries.
+- The handoff does not preserve SAC-level performance through the PPO phase under the tested protocol.
+
 ### Ethan
 
 Ethan owns PPO -> SAC generalization and timing dynamics.
@@ -276,7 +377,16 @@ Ethan owns:
 
 Current status:
 
-Results exist in `experiments/ethan_task/results.md` and `experiments/ethan_task/ethan-experiment-takeaways.md`. One aggregation caveat must be addressed before quoting every exact number.
+Results exist in `experiments/ethan_task/results.md` and `experiments/ethan_task/ethan-experiment-takeaways.md`. The older file `ethan-experiments-takeaway.md` was removed in favor of the longer takeaways doc.
+
+Reproducibility workflow (`experiments/ethan_task/README.md`):
+
+- Training: `train_reverse_handoff.py` with `--policy-init`, `--value-init`, `--switch-fraction`, `--switch-trigger`.
+- Modal: `modal run --detach src/RL-translational-dynamics/modal/experiment_ethan_modal.py` (optional `--no-include-long`).
+- Fetch: Modal volume paths `raw/ethan_task`, `raw/ethan_task_long_horizon_*`.
+- Summarize: `summarize_ethan_task.py` -> writes `experiments/ethan_task/results.md`.
+
+**Required fix before final paper numbers:** regenerate Ethan tables with `total_timesteps` in the grouping key so 500k and 1M runs are not merged. The contaminated Hopper `50% self-warmup` row (`mean_switch_step = 400000` instead of `250000`) is the smoking gun.
 
 ### Abhinav
 
@@ -285,21 +395,33 @@ Abhinav owns offline-assisted scheduling and shared infrastructure.
 Scope:
 
 - Diagnostic logging harness.
-- Modal wrappers.
-- Analysis scripts.
-- BC pretraining.
-- BC -> PPO and BC -> SAC.
-- Optional IQL or AWAC.
-- Interleaved BC.
-- Long-horizon Tier-0 arms.
+- Modal wrappers (`experiment_4_modal.py` for Tier 0-1).
+- Analysis (`summarize_experiment_4.py`).
+- BC pretraining from D4RL expert data via `demos.py`.
+- BC -> PPO and BC -> SAC (C2 interaction hypothesis).
+- Optional IQL or AWAC (C3, gated on Tier 0/1 value effect).
+- Interleaved BC anchoring during SAC.
+- Long-horizon: 2x Tier-0 arms @ 1M Hopper.
+
+**New stretch tasks (added in recent git pull, `tasks/abhinav-task.md` commits `23aacd0` / `9eb3b79`):**
+
+7. **Easy-environment RL pretraining** — train on a simplified/forgiving variant of the target MuJoCo env, then distill into real-env SAC or PPO. Priority arms:
+   - **Easy SAC -> real SAC** (same-algorithm curriculum; cleanest test).
+   - **Easy PPO -> real SAC** (optional; matches phase-scheduler story).
+   - Candidate simplifications: denser reward shaping, easier termination, shorter horizons, narrower initial-state noise, smoother action penalties.
+   - Report pretraining updates separately; match real-env fine-tuning steps against BC->* and pure baselines.
+
+8. **General starter policy diagnostic** — exploratory cross-env starter only if observation/action spaces align; otherwise per-target distillation pilots. Do not displace core BC/IQL/AWAC runs.
 
 Research contribution:
 
-Abhinav's planned work tests whether offline policy or value sources improve online sequencing.
+Abhinav's planned work tests whether offline policy or value sources improve online sequencing (C2/C3), plus whether curriculum-style RL warm starts help without claiming universal dominance over SAC.
 
 Current status:
 
-Task file exists and is detailed, but no completed Abhinav experiment result directory was found. The paper should describe these as planned, pending, or future work unless additional results are generated.
+Task file is current, but no completed Abhinav experiment result directory was found in the repo. Infra items 1-3 were upstream blockers for Ryan/Ethan; Ryan's slice completed via `ryan_modal.py`, suggesting partial infra delivery. Paper should treat BC/IQL/AWAC and easy-env stretch as **planned or in progress**, not completed results.
+
+`experiments/TODO.md` contains an out-of-scope idea (DPO/RLHF-style sequencing); deprioritize unless explicitly scoped later.
 
 ## Completed Results So Far
 
@@ -964,28 +1086,55 @@ Important limitations:
 
 - Main completed results cover Hopper-v4 and Walker2d-v4, not a broad benchmark suite.
 - Ryan's core mechanism results use 5 seeds, but some Ethan timing/adaptive rows use 3 seeds.
-- Ethan summary contains a known aggregation bug for Hopper 50% self-warmup.
-- Offline warm-start experiments are planned but not completed in the available result files.
+- Ethan summary contains a known aggregation bug for Hopper 50% self-warmup; long-horizon runs may be pooled with 500k runs until `summarize_ethan_task.py` groups by `total_timesteps`.
+- Offline warm-start experiments (BC, IQL/AWAC, interleaved BC) and easy-env stretch tasks are planned but not completed in the available result files.
 - SAC is a very strong baseline, making it difficult to show performance dominance.
-- Collapse counts in SAC -> PPO suggest instability that needs deeper diagnostics.
+- Collapse counts in SAC -> PPO (5/5 seeds per handoff arm on both envs in Ryan summary) suggest instability that needs deeper diagnostics.
 - Compute-normalized comparisons remain incomplete unless later results are added.
+- `PROGRESS_UPDATE.md` (May 21) predates the Ryan 500k Modal completion; do not treat its "Experiment 2 full 1M grid in progress" status as current.
+- Ryan regenerated tables/CSVs under `experiments/ryan_task/processed/` are gitignored; only reports and figures are guaranteed in a fresh clone.
 
 ## 9. Future Work
 
 Potential future directions:
 
-- Regenerate Ethan results with total budget included in grouping keys.
-- Add budget-matched SAC/PPO baselines to the same Ethan tables.
-- Complete BC -> SAC and BC -> PPO experiments.
+- **Fix Ethan aggregation:** add `total_timesteps` to grouping in `summarize_ethan_task.py`; separate 500k vs 1M tables; add budget-matched SAC/PPO baselines in the same summary.
+- **Complete Abhinav Tier 1:** BC pretrain validation, BC -> PPO, BC -> SAC with policy-retention diagnostics (C2).
+- **Gate Tier 2:** IQL or AWAC only if Tier 0/1 show separated value CIs (currently mixed/null for C1).
+- **Stretch curriculum warm starts:** Easy SAC -> real SAC; optional Easy PPO -> real SAC (Abhinav task items 7-8).
 - Test BC -> SAC -> PPO as the full three-phase scheduler.
-- Add IQL or AWAC as value-carrying offline sources.
-- Expand to HalfCheetah and Ant for stronger generalization.
+- Interleaved-BC K-sweep on Hopper; best-K on Walker2d.
+- Expand to HalfCheetah and Ant for stronger generalization (sanity data exists at 100k only).
 - Compare adaptive triggers beyond no-improvement:
   - entropy threshold.
   - critic loss stabilization.
   - KL/update magnitude stabilization.
   - return plateau.
 - Run compute-normalized comparisons by gradient updates or wall-clock proxy.
+- Rebuild Ryan bundle after new runs: `python scripts/plot_ryan_results.py` (Modal volume or W&B source).
+
+## Reproducibility Commands (Current Repo)
+
+```bash
+# Ryan static bundle (reports + figures; may refresh gitignored CSVs locally)
+python scripts/plot_ryan_results.py --source modal
+
+# Ethan summary after Modal fetch
+uv run python src/RL-translational-dynamics/exp0/summarize_ethan_task.py \
+  --results-dir results/raw/ethan_task \
+  --extra-results-dir results/raw/ethan_task_long_horizon_reverse_handoff \
+  --extra-results-dir results/raw/ethan_task_long_horizon_ppo \
+  --output-dir results/processed/ethan_task \
+  --notes-dir experiments/ethan_task
+
+# Early pilots
+uv run python src/RL-translational-dynamics/exp0/summarize_experiment_0.py
+uv run python src/RL-translational-dynamics/exp2/summarize_experiment_2.py
+uv run python src/RL-translational-dynamics/exp0/summarize_experiment_3.py
+
+# Unit tests for handoff utilities
+uv run pytest tests/test_handoff_utils.py tests/test_summarize_experiment_2.py
+```
 
 ## Suggested Final Paper Title Options
 
@@ -1005,6 +1154,7 @@ Use a concise contribution list like:
 4. We show that SAC remains a strong standalone baseline, while handoffs expose meaningful direction and timing effects.
 5. We find that value initialization is environment-dependent and not a universal solution to handoff instability.
 6. We show that simple adaptive switching can avoid poorly timed handoffs and improve performance in some settings.
+7. We release a reproducible Ryan results bundle (53 Modal runs, diagnostic figures, and paired value-init statistics) documenting when SAC->PPO fails to beat continued SAC.
 
 ## Best Single-Paragraph Conclusion
 
@@ -1016,14 +1166,23 @@ Task files:
 
 - `tasks/ryan-task.md`
 - `tasks/ethan-task.md`
-- `tasks/abhinav-task.md`
+- `tasks/abhinav-task.md` (includes easy-env stretch tasks as of `9eb3b79`)
 
 Design and project docs:
 
 - `README.md`
 - `FIRST_EXPERIMENTS.md`
-- `PROGRESS_UPDATE.md`
+- `PROGRESS_UPDATE.md` (historical; superseded for Ryan status by `experiments/ryan_task/`)
+- `AGENTS.md`
 - `docs/superpowers/specs/2026-05-26-rl-sequencing-transfer-mechanism-design.md`
+- `docs/superpowers/specs/critiques_ryan.md`
+- `docs/superpowers/specs/ethan_critiques.md`
+
+Experiment runbooks:
+
+- `experiments/ryan_experiment.md`
+- `experiments/ethan_task/README.md`
+- `experiments/TODO.md` (informal future ideas only)
 
 Result summaries:
 
@@ -1035,20 +1194,38 @@ Result summaries:
 - `experiments/ethan_task/results.md`
 - `experiments/ethan_task/ethan-experiment-takeaways.md`
 
-Ryan processed metrics:
+Code and analysis (merged on main):
+
+- `src/RL-translational-dynamics/exp2/train_handoff.py`
+- `src/RL-translational-dynamics/exp2/handoff_utils.py`
+- `src/RL-translational-dynamics/exp2/summarize_experiment_2.py`
+- `src/RL-translational-dynamics/modal/ryan_modal.py`
+- `src/RL-translational-dynamics/modal/experiment_ethan_modal.py` (referenced in Ethan README)
+- `scripts/plot_ryan_results.py`
+- `scripts/run_experiment_2.sh`, `scripts/fetch_experiment_2_results.sh`
+
+Ryan processed metrics (local regeneration; gitignored in clone):
 
 - `experiments/ryan_task/processed/arm_summary.csv`
 - `experiments/ryan_task/processed/value_init_deltas.csv`
 - `experiments/ryan_task/processed/rank_summary.csv`
+- `experiments/ryan_task/processed/bundle_summary.json`
+- `experiments/ryan_task/processed/handoff_transients.csv`
+- `experiments/ryan_task/processed/per_run_summary.csv`
+- `experiments/ryan_task/audit/ryan_modal_manifest.json`
 
-Useful figures and referenced artifacts:
+Useful figures (checked in under `experiments/ryan_task/figures/`):
 
-- `experiments/ryan_task/figures/headline/learning_curves_500k.png`
+- `experiments/ryan_task/figures/headline/learning_curves_500k.png` (+ `.pdf`)
 - `experiments/ryan_task/figures/headline/auc_summary.png`
 - `experiments/ryan_task/figures/headline/final_return_summary.png`
 - `experiments/ryan_task/figures/headline/value_init_auc_deltas.png`
 - `experiments/ryan_task/figures/headline/hopper_sac_long_horizon.png`
-- `experiments/ethan_task/results.md` references `results/processed/ethan_task/Hopper_v4_learning_curves.png`
-- `experiments/ethan_task/results.md` references `results/processed/ethan_task/Walker2d_v4_learning_curves.png`
-- `experiments/ethan_task/results.md` references `results/processed/ethan_task/Hopper_v4_auc_summary.png`
-- `experiments/ethan_task/results.md` references `results/processed/ethan_task/Walker2d_v4_auc_summary.png`
+- `experiments/ryan_task/figures/diagnostics/handoff_transient.png`
+- `experiments/ryan_task/figures/diagnostics/mechanism_diagnostics.png`
+- `experiments/ryan_task/figures/diagnostics/Hopper-v4_per_seed_curves.png`
+- `experiments/ryan_task/figures/diagnostics/Walker2d-v4_per_seed_curves.png`
+
+Ethan artifacts (generated under `results/processed/ethan_task/` after fetch; not always present in clone):
+
+- `experiments/ethan_task/results.md` references `Hopper_v4_learning_curves.png`, `Walker2d_v4_learning_curves.png`, `Hopper_v4_auc_summary.png`, `Walker2d_v4_auc_summary.png`
