@@ -50,6 +50,8 @@ SUMMARY_SAMPLED_LINE_MARKERS = (
     '"ppo_explained_variance"',
     '"sac_qf1_mean"',
     '"sac_qf2_mean"',
+    '"iql_q_loss"',
+    '"iql_value_loss"',
     '"awac_critic_loss"',
 )
 SAMPLED_MARKER_STRIDE = 5_000
@@ -394,7 +396,7 @@ def write_outputs(args: argparse.Namespace, runs: dict[RunKey, RunSummary]) -> N
         ),
         plot_metric_family(
             runs,
-            ["ppo_explained_variance", "sac_qf1_mean", "sac_qf2_mean", "awac_critic_loss"],
+            ["ppo_explained_variance", "sac_qf1_mean", "sac_qf2_mean", "iql_q_loss", "iql_value_loss", "awac_critic_loss"],
             args.output_dir,
             "value_quality.png",
             "Value quality metric",

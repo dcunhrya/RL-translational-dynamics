@@ -6,11 +6,14 @@ This experiment family covers Abhinav's assigned slice from `tasks/abhinav-task.
 - BC -> SAC, BC -> PPO, and BC -> SAC -> PPO online transfer arms.
 - Interleaved BC anchoring during SAC via `--bc-anchor-interval`.
 - Gated AWAC offline pretraining and AWAC -> SAC/PPO transfer.
+- IQL offline pretraining plus IQL -> SAC, IQL -> PPO, and IQL -> SAC -> PPO transfer arms.
 - Stretch easy-environment SAC pretraining with forgiving termination, then Easy SAC -> real SAC transfer.
 - General starter policy compatibility diagnostics for cross-environment transfer.
 - Shared Experiment 4 Modal orchestration and analysis.
 
 Offline-assisted runs log offline dataset size and offline updates separately from online environment steps. They should not be described as env-step matched against pure online SAC/PPO without that caveat.
+
+IQL checkpoints include actor, Q, target-Q, and value-network states. The current online transfer interface distills the IQL actor into SAC/PPO-compatible policies; it does not directly transplant the IQL value function into the online learner.
 
 ## Local Smoke Commands
 
@@ -81,6 +84,19 @@ python src/RL-translational-dynamics/exp4/summarize_experiment_4.py \
   --notes-path experiments/abhinav_task/smoke_results.md
 ```
 
+IQL smoke pretraining:
+
+```shell
+python src/RL-translational-dynamics/exp4/train_iql.py \
+  --env-id Hopper-v4 \
+  --total-updates 2 \
+  --eval-interval 1 \
+  --num-eval-episodes 1 \
+  --max-dataset-samples 1024 \
+  --save-dir results/raw/abhinav_task_smoke/iql_pretrain \
+  --no-cuda
+```
+
 Check whether a starter checkpoint is cross-environment compatible:
 
 ```shell
@@ -127,6 +143,29 @@ modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
 ```shell
 modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
   --mode tier2-transfer \
+  --total-timesteps 500000
+```
+
+IQL Tier 2, including pretrain followed by transfer jobs:
+
+```shell
+modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
+  --mode iql \
+  --iql-updates 100000 \
+  --total-timesteps 500000
+```
+
+IQL can also be split into separate stages:
+
+```shell
+modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
+  --mode iql-pretrain \
+  --iql-updates 100000
+```
+
+```shell
+modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
+  --mode iql-transfer \
   --total-timesteps 500000
 ```
 

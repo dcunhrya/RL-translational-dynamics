@@ -10,11 +10,16 @@ Offline-assisted runs report online env steps separately from offline dataset si
 | Hopper-v4 | bc_anchor_sac K=10 | 1 | 70.76 [70.76, 70.76] | 68.12 [68.12, 68.12] | 70.76 | 1 |
 | Hopper-v4 | bc_to_ppo | 1 | 83.93 [83.93, 83.93] | 85.67 [85.67, 85.67] | 83.93 | 1 |
 | Hopper-v4 | bc_to_sac_to_ppo | 1 | 27.09 [27.09, 27.09] | 55.80 [55.80, 55.80] | 27.09 | 1 |
+| Hopper-v4 | iql | 1 | 128.20 [128.20, 128.20] | 0.00 [0.00, 0.00] | 128.20 | 0 |
+| Hopper-v4 | iql_to_ppo (0k) | 1 | 84.51 [84.51, 84.51] | 87.05 [87.05, 87.05] | 84.51 | 1 |
+| Hopper-v4 | iql_to_sac (0k) | 1 | 94.48 [94.48, 94.48] | 85.90 [85.90, 85.90] | 94.48 | 1 |
+| Hopper-v4 | iql_to_sac_to_ppo (0k) | 1 | 25.52 [25.52, 25.52] | 65.34 [65.34, 65.34] | 25.52 | 1 |
 
 ## Handoff Transients
 
 | Env | Method | Seed | Switch step | Delta |
 | --- | --- | ---: | ---: | ---: |
+| Hopper-v4 | iql_to_sac_to_ppo | 0 | 10 | 0.00 |
 | Hopper-v4 | bc_to_sac_to_ppo | 0 | 10 | 0.00 |
 
 ## Figures

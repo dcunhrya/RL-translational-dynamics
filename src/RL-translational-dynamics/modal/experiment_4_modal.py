@@ -352,6 +352,49 @@ def run_awac_pretrain(
 @app.function(
     image=image,
     volumes={str(REMOTE_RESULTS_DIR): results_volume},
+    timeout=60 * 60 * 6,
+    cpu=4.0,
+    memory=16384,
+    gpu=DEFAULT_GPU,
+)
+def run_iql_pretrain(
+    env_id: str,
+    total_updates: int,
+    eval_interval: int,
+    num_eval_episodes: int,
+    wandb_project: str,
+    save_dir: str = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "iql_pretrain"),
+) -> None:
+    run_command(
+        [
+            "python",
+            str(REMOTE_SRC_DIR / "exp4" / "train_iql.py"),
+            "--env-id",
+            env_id,
+            "--seed",
+            "0",
+            "--total-updates",
+            str(total_updates),
+            "--eval-interval",
+            str(eval_interval),
+            "--num-eval-episodes",
+            str(num_eval_episodes),
+            "--save-dir",
+            save_dir,
+            "--wandb-project",
+            wandb_project,
+            "--wandb-group",
+            f"abhinav_iql_pretrain__{env_id}",
+            "--track",
+        ],
+        wandb_project,
+    )
+    results_volume.commit()
+
+
+@app.function(
+    image=image,
+    volumes={str(REMOTE_RESULTS_DIR): results_volume},
     timeout=60 * 60 * 10,
     cpu=4.0,
     memory=16384,
@@ -454,6 +497,180 @@ def run_awac_to_ppo(
             wandb_project,
             "--wandb-group",
             f"abhinav_awac_to_ppo__{env_id}",
+            "--track",
+        ],
+        wandb_project,
+    )
+    results_volume.commit()
+
+
+@app.function(
+    image=image,
+    volumes={str(REMOTE_RESULTS_DIR): results_volume},
+    timeout=60 * 60 * 10,
+    cpu=4.0,
+    memory=16384,
+    gpu=DEFAULT_GPU,
+)
+def run_iql_to_sac(
+    env_id: str,
+    seed: int,
+    total_timesteps: int,
+    eval_interval: int,
+    num_eval_episodes: int,
+    save_dir: str,
+    wandb_project: str,
+) -> None:
+    env_slug = env_id.replace("-v", "_v").replace("-", "_")
+    iql_policy_path = latest_policy(
+        REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "iql_pretrain",
+        f"iql__{env_slug}__",
+        "iql_policy.pt",
+    )
+    run_command(
+        [
+            "python",
+            str(REMOTE_SRC_DIR / "exp0" / "train_sac.py"),
+            "--env-id",
+            env_id,
+            "--seed",
+            str(seed),
+            "--total-timesteps",
+            str(total_timesteps),
+            "--eval-interval",
+            str(eval_interval),
+            "--num-eval-episodes",
+            str(num_eval_episodes),
+            "--save-dir",
+            save_dir,
+            "--bc-policy-path",
+            iql_policy_path,
+            "--offline-policy-source",
+            "iql",
+            "--bc-distill-steps",
+            "500",
+            "--wandb-project",
+            wandb_project,
+            "--wandb-group",
+            f"abhinav_iql_to_sac__{env_id}",
+            "--track",
+        ],
+        wandb_project,
+    )
+    results_volume.commit()
+
+
+@app.function(
+    image=image,
+    volumes={str(REMOTE_RESULTS_DIR): results_volume},
+    timeout=60 * 60 * 10,
+    cpu=4.0,
+    memory=16384,
+    gpu=DEFAULT_GPU,
+)
+def run_iql_to_ppo(
+    env_id: str,
+    seed: int,
+    total_timesteps: int,
+    eval_interval: int,
+    num_eval_episodes: int,
+    save_dir: str,
+    wandb_project: str,
+) -> None:
+    env_slug = env_id.replace("-v", "_v").replace("-", "_")
+    iql_policy_path = latest_policy(
+        REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "iql_pretrain",
+        f"iql__{env_slug}__",
+        "iql_policy.pt",
+    )
+    run_command(
+        [
+            "python",
+            str(REMOTE_SRC_DIR / "exp0" / "train_ppo.py"),
+            "--env-id",
+            env_id,
+            "--seed",
+            str(seed),
+            "--total-timesteps",
+            str(total_timesteps),
+            "--eval-interval",
+            str(eval_interval),
+            "--num-eval-episodes",
+            str(num_eval_episodes),
+            "--save-dir",
+            save_dir,
+            "--bc-policy-path",
+            iql_policy_path,
+            "--offline-policy-source",
+            "iql",
+            "--bc-distill-steps",
+            "500",
+            "--wandb-project",
+            wandb_project,
+            "--wandb-group",
+            f"abhinav_iql_to_ppo__{env_id}",
+            "--track",
+        ],
+        wandb_project,
+    )
+    results_volume.commit()
+
+
+@app.function(
+    image=image,
+    volumes={str(REMOTE_RESULTS_DIR): results_volume},
+    timeout=60 * 60 * 10,
+    cpu=4.0,
+    memory=16384,
+    gpu=DEFAULT_GPU,
+)
+def run_iql_sac_ppo(
+    env_id: str,
+    seed: int,
+    total_timesteps: int,
+    eval_interval: int,
+    num_eval_episodes: int,
+    save_dir: str,
+    wandb_project: str,
+) -> None:
+    env_slug = env_id.replace("-v", "_v").replace("-", "_")
+    iql_policy_path = latest_policy(
+        REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "iql_pretrain",
+        f"iql__{env_slug}__",
+        "iql_policy.pt",
+    )
+    run_command(
+        [
+            "python",
+            str(REMOTE_SRC_DIR / "exp2" / "train_handoff.py"),
+            "--env-id",
+            env_id,
+            "--seed",
+            str(seed),
+            "--total-timesteps",
+            str(total_timesteps),
+            "--switch-fraction",
+            "0.5",
+            "--policy-init",
+            "distill",
+            "--value-init",
+            "self-warmup",
+            "--policy-source",
+            "sac",
+            "--bc-policy-path",
+            iql_policy_path,
+            "--offline-policy-source",
+            "iql",
+            "--eval-interval",
+            str(eval_interval),
+            "--num-eval-episodes",
+            str(num_eval_episodes),
+            "--save-dir",
+            save_dir,
+            "--wandb-project",
+            wandb_project,
+            "--wandb-group",
+            f"abhinav_iql_sac_ppo__{env_id}",
             "--track",
         ],
         wandb_project,
@@ -761,6 +978,56 @@ def easy_transfer_specs(total_timesteps: int, eval_interval: int, num_eval_episo
     return specs
 
 
+def iql_transfer_specs(total_timesteps: int, eval_interval: int, num_eval_episodes: int, wandb_project: str) -> list:
+    specs = []
+    save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "tier2_iql")
+    for env_id in ENVS:
+        for seed in STRETCH_SEEDS:
+            specs.append(
+                (
+                    run_iql_to_sac,
+                    {
+                        "env_id": env_id,
+                        "seed": seed,
+                        "total_timesteps": total_timesteps,
+                        "eval_interval": eval_interval,
+                        "num_eval_episodes": num_eval_episodes,
+                        "save_dir": save_dir,
+                        "wandb_project": wandb_project,
+                    },
+                )
+            )
+            specs.append(
+                (
+                    run_iql_to_ppo,
+                    {
+                        "env_id": env_id,
+                        "seed": seed,
+                        "total_timesteps": total_timesteps,
+                        "eval_interval": eval_interval,
+                        "num_eval_episodes": num_eval_episodes,
+                        "save_dir": save_dir,
+                        "wandb_project": wandb_project,
+                    },
+                )
+            )
+            specs.append(
+                (
+                    run_iql_sac_ppo,
+                    {
+                        "env_id": env_id,
+                        "seed": seed,
+                        "total_timesteps": total_timesteps,
+                        "eval_interval": eval_interval,
+                        "num_eval_episodes": num_eval_episodes,
+                        "save_dir": save_dir,
+                        "wandb_project": wandb_project,
+                    },
+                )
+            )
+    return specs
+
+
 @app.local_entrypoint()
 def main(
     mode: str = "core",
@@ -768,6 +1035,7 @@ def main(
     long_timesteps: int = 1_000_000,
     bc_updates: int = 50_000,
     awac_updates: int = 100_000,
+    iql_updates: int = 100_000,
     eval_interval: int = 5_000,
     num_eval_episodes: int = 5,
     wandb_project: str = "rl-translational-dynamics",
@@ -821,15 +1089,55 @@ def main(
         run_specs_batched(specs, max_parallel_gpu)
         return
 
-    if mode in {"core", "interleaved", "interleaved-walker", "long", "all"} and not skip_bc_pretrain:
-        for env_id in ENVS:
-            run_bc_pretrain.remote(
-                env_id=env_id,
-                total_updates=bc_updates,
-                eval_interval=eval_interval,
-                num_eval_episodes=num_eval_episodes,
-                wandb_project=wandb_project,
+    if mode in {"iql-pretrain", "iql", "all"}:
+        specs = [
+            (
+                run_iql_pretrain,
+                {
+                    "env_id": env_id,
+                    "total_updates": iql_updates,
+                    "eval_interval": eval_interval,
+                    "num_eval_episodes": num_eval_episodes,
+                    "wandb_project": wandb_project,
+                },
             )
+            for env_id in ENVS
+        ]
+        run_specs_batched(specs, max_parallel_gpu)
+        if mode == "iql-pretrain":
+            return
+
+    if mode in {"core", "interleaved", "interleaved-walker", "long", "all"} and not skip_bc_pretrain:
+        specs = [
+            (
+                run_bc_pretrain,
+                {
+                    "env_id": env_id,
+                    "total_updates": bc_updates,
+                    "eval_interval": eval_interval,
+                    "num_eval_episodes": num_eval_episodes,
+                    "wandb_project": wandb_project,
+                },
+            )
+            for env_id in ENVS
+        ]
+        run_specs_batched(specs, max_parallel_gpu)
+
+    if mode == "all":
+        specs = [
+            (
+                run_awac_pretrain,
+                {
+                    "env_id": env_id,
+                    "total_updates": awac_updates,
+                    "eval_interval": eval_interval,
+                    "num_eval_episodes": num_eval_episodes,
+                    "wandb_project": wandb_project,
+                },
+            )
+            for env_id in ENVS
+        ]
+        run_specs_batched(specs, max_parallel_gpu)
 
     specs = []
     if mode in {"core", "all"}:
@@ -860,15 +1168,8 @@ def main(
             )
     if mode in {"easy", "easy-transfer", "all"}:
         specs.extend(easy_transfer_specs(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
-    if mode == "all":
-        for env_id in ENVS:
-            run_awac_pretrain.remote(
-                env_id=env_id,
-                total_updates=awac_updates,
-                eval_interval=eval_interval,
-                num_eval_episodes=num_eval_episodes,
-                wandb_project=wandb_project,
-            )
+    if mode in {"iql", "iql-transfer", "all"}:
+        specs.extend(iql_transfer_specs(total_timesteps, eval_interval, num_eval_episodes, wandb_project))
     if mode in {"tier2", "tier2-transfer", "all"}:
         save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "tier2_awac")
         for env_id in ENVS:

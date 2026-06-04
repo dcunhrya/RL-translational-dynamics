@@ -1,5 +1,6 @@
 PHASES = (
     "bc",
+    "iql",
     "awac",
     "sac",
     "distill",
@@ -43,6 +44,9 @@ DIAGNOSTIC_KEYS = (
     "sac_policy_entropy",
     "sac_qf1_mean",
     "sac_qf2_mean",
+    "iql_actor_loss",
+    "iql_q_loss",
+    "iql_value_loss",
     "awac_actor_loss",
     "awac_critic_loss",
 )
