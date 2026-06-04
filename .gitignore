@@ -11,6 +11,7 @@
 # experiment artifacts
 wandb/
 results/
+logs/
 
 # Ryan Modal launch/requeue intermediates
 experiments/modal_detached_logs/
