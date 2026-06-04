@@ -146,7 +146,8 @@ modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \
   --total-timesteps 500000
 ```
 
-IQL Tier 2, including pretrain followed by transfer jobs:
+IQL Tier 2, including 2 offline pretrain jobs followed by 30 transfer jobs
+(`IQL -> SAC`, `IQL -> PPO`, `IQL -> SAC -> PPO` across 2 envs x 5 seeds):
 
 ```shell
 modal run src/RL-translational-dynamics/modal/experiment_4_modal.py \

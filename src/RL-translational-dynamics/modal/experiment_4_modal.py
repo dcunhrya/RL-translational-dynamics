@@ -982,7 +982,7 @@ def iql_transfer_specs(total_timesteps: int, eval_interval: int, num_eval_episod
     specs = []
     save_dir = str(REMOTE_RESULTS_DIR / "raw" / "abhinav_task" / "tier2_iql")
     for env_id in ENVS:
-        for seed in STRETCH_SEEDS:
+        for seed in SEEDS:
             specs.append(
                 (
                     run_iql_to_sac,
