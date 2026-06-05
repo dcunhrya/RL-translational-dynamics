@@ -58,4 +58,4 @@ Compared with the earlier BC/AWAC warm-start runs, IQL is competitive with other
 - Summary JSON: `results/processed/abhinav_task_iql_local/summary.json`
 - Learning curves: `results/processed/abhinav_task_iql_local/phase_marked_learning_curves.png`
 - Policy retention plot: `results/processed/abhinav_task_iql_local/policy_retention.png`
-
+- Value quality plot: `results/processed/abhinav_task_iql_local/value_quality.png`
