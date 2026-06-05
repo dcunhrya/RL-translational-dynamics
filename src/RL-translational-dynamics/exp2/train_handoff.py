@@ -23,8 +23,11 @@ from train_ppo import evaluate as evaluate_ppo
 from train_sac import Actor as SACActor
 from train_sac import ReplayBuffer
 from train_sac import SoftQNetwork
+from train_sac import distill_sac_actor_from_bc
 from train_sac import evaluate as evaluate_sac
 from train_sac import grad_norm
+from train_sac import load_bc_actor
+from train_sac import load_bc_observations
 from train_sac import make_env
 from train_sac import seed_everything
 from train_sac import write_metric
@@ -78,6 +81,11 @@ class Args:
     source_value_warmup_steps: int = 500
     source_value_warmup_batch_size: int = 1024
     source_value_warmup_learning_rate: float = 3e-4
+    bc_policy_path: str | None = None
+    offline_policy_source: str = "bc"
+    bc_init_distill_steps: int = 500
+    bc_init_distill_batch_size: int = 1024
+    bc_init_distill_learning_rate: float = 1e-3
     eval_interval: int = 5_000
     num_eval_episodes: int = 5
     save_interval: int = 100_000
@@ -105,7 +113,7 @@ def parse_args() -> Args:
 
 
 def build_metadata(args: Args, phase: str, switch_step: int, switched: bool) -> dict:
-    return build_handoff_metadata(
+    metadata = build_handoff_metadata(
         args.switch_fraction,
         phase,
         switch_step,
@@ -115,6 +123,17 @@ def build_metadata(args: Args, phase: str, switch_step: int, switched: bool) -> 
         policy_source=args.policy_source,
         value_source=args.value_source,
     )
+    if args.bc_policy_path:
+        metadata["algorithm"] = f"{args.offline_policy_source}_to_sac_to_ppo"
+        metadata["starter_policy_init"] = "distill"
+        metadata["starter_policy_source"] = args.offline_policy_source
+        metadata["starter_policy_path"] = args.bc_policy_path
+    else:
+        metadata["starter_policy_init"] = "random"
+        metadata["starter_policy_source"] = "none"
+        metadata["starter_policy_path"] = None
+    metadata["total_timesteps"] = args.total_timesteps
+    return metadata
 
 
 def save_checkpoint(
@@ -267,8 +286,9 @@ def main() -> None:
     validate_transfer_config(args.policy_init, args.value_init, args.policy_source, args.value_source)
     switch_step = compute_switch_step(args.total_timesteps, args.switch_fraction)
     arm_name = transfer_arm_name(args.policy_init, args.value_init, args.policy_source, args.value_source)
+    algorithm_slug = f"{args.offline_policy_source}_to_sac_to_ppo" if args.bc_policy_path else "sac_to_ppo"
     run_name = (
-        f"handoff__{args.env_id}__seed_{args.seed}__frac_{args.switch_fraction:.2f}"
+        f"{algorithm_slug}__{args.env_id}__seed_{args.seed}__frac_{args.switch_fraction:.2f}"
         f"__{arm_name}__switch_{switch_step}__{int(time.time())}"
     )
     save_dir = Path(args.save_dir) / run_name
@@ -328,6 +348,37 @@ def main() -> None:
     last_eval_step = 0
     last_save_step = 0
 
+    if args.bc_policy_path:
+        bc_actor = load_bc_actor(args.bc_policy_path, obs_dim, env.action_space, device)
+        bc_observations = load_bc_observations(args.env_id)
+        bc_distill_loss, _ = distill_sac_actor_from_bc(
+            sac_actor,
+            bc_actor,
+            bc_observations,
+            args.bc_init_distill_steps,
+            args.bc_init_distill_batch_size,
+            args.bc_init_distill_learning_rate,
+            device,
+        )
+        bc_eval_mean, bc_eval_std = evaluate_sac(
+            sac_actor, args.env_id, args.seed + 50_000, device, args.num_eval_episodes
+        )
+        bc_init_metrics = {
+            "env": args.env_id,
+            "seed": args.seed,
+            "env_steps": 0,
+            "gradient_updates": 0,
+            "wall_clock_sec": time.time() - start_time,
+            "eval_return_mean": bc_eval_mean,
+            "eval_return_std": bc_eval_std,
+            "bc_pre_finetune_eval_return_mean": bc_eval_mean,
+            "bc_pre_finetune_eval_return_std": bc_eval_std,
+            "bc_distill_loss": bc_distill_loss,
+            "bc_distill_steps": args.bc_init_distill_steps,
+        }
+        bc_init_metrics.update(build_metadata(args, "distill", switch_step, switched=False))
+        write_metric(metrics_path, bc_init_metrics, wandb_run)
+
     initial_eval_mean, initial_eval_std = evaluate_sac(
         sac_actor, args.env_id, args.seed + 10_000, device, args.num_eval_episodes
     )
@@ -336,7 +387,7 @@ def main() -> None:
         "seed": args.seed,
         "env_steps": 0,
         "gradient_updates": 0,
-        "wall_clock_sec": 0.0,
+        "wall_clock_sec": time.time() - start_time,
         "eval_return_mean": initial_eval_mean,
         "eval_return_std": initial_eval_std,
     }

@@ -10,6 +10,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions.normal import Normal
 
@@ -36,6 +37,11 @@ class Args:
     num_eval_episodes: int = 5
     save_interval: int = 25_000
     save_dir: str = "results/raw/experiment_0"
+    bc_policy_path: str | None = None
+    offline_policy_source: str = "bc"
+    bc_distill_steps: int = 0
+    bc_distill_batch_size: int = 1024
+    bc_distill_learning_rate: float = 1e-3
     track: bool = False
     wandb_project: str = "rl-translational-dynamics"
     wandb_entity: str | None = None
@@ -175,6 +181,82 @@ def evaluate(agent: Agent, env_id: str, seed: int, device: torch.device, episode
     return float(np.mean(returns)), float(np.std(returns))
 
 
+def algorithm_name(args: Args) -> str:
+    if args.bc_policy_path:
+        return f"{args.offline_policy_source}_to_ppo"
+    return "ppo"
+
+
+def base_metadata(args: Args, phase: str) -> dict:
+    has_bc_policy = bool(args.bc_policy_path)
+    return {
+        "algorithm": algorithm_name(args),
+        "phase": phase,
+        "switched": False,
+        "switch_step": None,
+        "switch_reason": None,
+        "trigger_value": None,
+        "policy_init": "distill" if has_bc_policy else "random",
+        "policy_source": args.offline_policy_source if has_bc_policy else "none",
+        "value_init": "random" if has_bc_policy else "native",
+        "value_source": "none",
+        "bc_policy_path": args.bc_policy_path,
+        "total_timesteps": args.total_timesteps,
+    }
+
+
+def load_bc_actor(path: str, obs_dim: int, action_space: gym.spaces.Box, device: torch.device):
+    from train_sac import Actor as SourceActor
+
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(path, map_location=device)
+    actor_state = checkpoint.get("actor") or checkpoint.get("bc_actor") or checkpoint.get("sac_actor")
+    if actor_state is None:
+        raise KeyError(f"{path} does not contain an actor, bc_actor, or sac_actor state dict.")
+    actor = SourceActor(obs_dim, action_space).to(device)
+    actor.load_state_dict(actor_state)
+    actor.eval()
+    return actor
+
+
+def load_bc_observations(env_id: str) -> np.ndarray:
+    from demos import load_d4rl_expert_data
+
+    batch = load_d4rl_expert_data(env_id)
+    return batch.observations
+
+
+def distill_ppo_actor_from_bc(
+    agent: Agent,
+    bc_actor,
+    observations: np.ndarray,
+    steps: int,
+    batch_size: int,
+    learning_rate: float,
+    device: torch.device,
+) -> float | None:
+    if steps <= 0:
+        return None
+    if len(observations) == 0:
+        raise ValueError("Cannot distill from BC policy without observations.")
+    optimizer = optim.Adam(agent.actor_mean.parameters(), lr=learning_rate)
+    last_loss = None
+    for _ in range(steps):
+        batch_indices = np.random.randint(0, len(observations), size=min(batch_size, len(observations)))
+        obs_batch = torch.as_tensor(observations[batch_indices], dtype=torch.float32, device=device)
+        with torch.no_grad():
+            bc_actions, _, _ = bc_actor.get_action(obs_batch, deterministic=True)
+        ppo_actions, _, _, _ = agent.get_action_and_value(obs_batch, deterministic=True)
+        loss = F.mse_loss(ppo_actions, bc_actions)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        last_loss = float(loss.item())
+    return last_loss
+
+
 def save_checkpoint(
     path: Path,
     args: Args,
@@ -185,7 +267,7 @@ def save_checkpoint(
 ) -> None:
     torch.save(
         {
-            "algorithm": "ppo",
+            "algorithm": algorithm_name(args),
             "args": asdict(args),
             "agent": agent.state_dict(),
             "optimizer": optimizer.state_dict(),
@@ -207,7 +289,8 @@ def main() -> None:
     args = parse_args()
     env_slug = args.env_id.replace("-v", "_v").replace("-", "_")
     horizon_k = int(args.total_timesteps / 1000)
-    run_name = f"ppo__{env_slug}__seed_{args.seed}__{horizon_k}k__{int(time.time())}"
+    algo = algorithm_name(args)
+    run_name = f"{algo}__{env_slug}__seed_{args.seed}__{horizon_k}k__{int(time.time())}"
     save_dir = Path(args.save_dir) / run_name
     save_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = save_dir / "metrics.jsonl"
@@ -222,11 +305,11 @@ def main() -> None:
             project=args.wandb_project,
             entity=args.wandb_entity,
             group=args.wandb_group,
-            job_type="baseline_ppo",
+            job_type=algo,
             name=run_name,
             config=asdict(args),
             save_code=True,
-            tags=["experiment_0", "baseline", "ppo", args.env_id],
+            tags=["experiment_0", algo, args.env_id],
         )
 
     env = make_env(args.env_id, args.seed, args.capture_video, run_name)
@@ -247,26 +330,50 @@ def main() -> None:
     global_step = 0
     gradient_updates = 0
     num_updates = math.ceil(args.total_timesteps / args.num_steps)
-    initial_eval_mean, initial_eval_std = evaluate(agent, args.env_id, args.seed + 10_000, device, args.num_eval_episodes)
-    write_metric(
-        metrics_path,
-        {
-            "algorithm": "ppo",
+    if args.bc_policy_path:
+        bc_actor = load_bc_actor(args.bc_policy_path, obs_dim, env.action_space, device)
+        bc_observations = load_bc_observations(args.env_id)
+        bc_distill_loss = distill_ppo_actor_from_bc(
+            agent,
+            bc_actor,
+            bc_observations,
+            args.bc_distill_steps,
+            args.bc_distill_batch_size,
+            args.bc_distill_learning_rate,
+            device,
+        )
+        bc_eval_mean, bc_eval_std = evaluate(agent, args.env_id, args.seed + 50_000, device, args.num_eval_episodes)
+        distill_metrics = {
+            "algorithm": algo,
             "env": args.env_id,
             "seed": args.seed,
             "env_steps": 0,
             "gradient_updates": 0,
-            "wall_clock_sec": 0.0,
-            "eval_return_mean": initial_eval_mean,
-            "eval_return_std": initial_eval_std,
-            "phase": "ppo",
-            "switched": False,
-            "switch_step": None,
-            "switch_reason": None,
-            "trigger_value": None,
-        },
-        wandb_run,
-    )
+            "wall_clock_sec": time.time() - start_time,
+            "eval_return_mean": bc_eval_mean,
+            "eval_return_std": bc_eval_std,
+            "bc_pre_finetune_eval_return_mean": bc_eval_mean,
+            "bc_pre_finetune_eval_return_std": bc_eval_std,
+            "bc_distill_loss": bc_distill_loss,
+            "bc_distill_steps": args.bc_distill_steps,
+            "offline_pretrain_updates": None,
+        }
+        distill_metrics.update(base_metadata(args, "distill"))
+        write_metric(metrics_path, distill_metrics, wandb_run)
+
+    initial_eval_mean, initial_eval_std = evaluate(agent, args.env_id, args.seed + 10_000, device, args.num_eval_episodes)
+    initial_metrics = {
+        "algorithm": algo,
+        "env": args.env_id,
+        "seed": args.seed,
+        "env_steps": 0,
+        "gradient_updates": 0,
+        "wall_clock_sec": time.time() - start_time,
+        "eval_return_mean": initial_eval_mean,
+        "eval_return_std": initial_eval_std,
+    }
+    initial_metrics.update(base_metadata(args, "ppo"))
+    write_metric(metrics_path, initial_metrics, wandb_run)
 
     next_obs = torch.as_tensor(obs, dtype=torch.float32, device=device)
     next_done = torch.zeros((), device=device)
@@ -298,25 +405,18 @@ def main() -> None:
             rewards_buf[step] = float(reward)
 
             if "episode" in info:
-                write_metric(
-                    metrics_path,
-                    {
-                        "algorithm": "ppo",
-                        "env": args.env_id,
-                        "seed": args.seed,
-                        "env_steps": global_step,
-                        "gradient_updates": gradient_updates,
-                        "wall_clock_sec": time.time() - start_time,
-                        "episode_return": float(info["episode"]["r"]),
-                        "episode_length": int(info["episode"]["l"]),
-                        "phase": "ppo",
-                        "switched": False,
-                        "switch_step": None,
-                        "switch_reason": None,
-                        "trigger_value": None,
-                    },
-                    wandb_run,
-                )
+                episode_metrics = {
+                    "algorithm": algo,
+                    "env": args.env_id,
+                    "seed": args.seed,
+                    "env_steps": global_step,
+                    "gradient_updates": gradient_updates,
+                    "wall_clock_sec": time.time() - start_time,
+                    "episode_return": float(info["episode"]["r"]),
+                    "episode_length": int(info["episode"]["l"]),
+                }
+                episode_metrics.update(base_metadata(args, "ppo"))
+                write_metric(metrics_path, episode_metrics, wandb_run)
 
             if episode_done:
                 obs_np, _ = env.reset()
@@ -324,25 +424,18 @@ def main() -> None:
 
             if global_step - last_eval_step >= args.eval_interval or global_step == args.total_timesteps:
                 eval_mean, eval_std = evaluate(agent, args.env_id, args.seed + 10_000 + global_step, device, args.num_eval_episodes)
-                write_metric(
-                    metrics_path,
-                    {
-                        "algorithm": "ppo",
-                        "env": args.env_id,
-                        "seed": args.seed,
-                        "env_steps": global_step,
-                        "gradient_updates": gradient_updates,
-                        "wall_clock_sec": time.time() - start_time,
-                        "eval_return_mean": eval_mean,
-                        "eval_return_std": eval_std,
-                        "phase": "ppo",
-                        "switched": False,
-                        "switch_step": None,
-                        "switch_reason": None,
-                        "trigger_value": None,
-                    },
-                    wandb_run,
-                )
+                eval_metrics = {
+                    "algorithm": algo,
+                    "env": args.env_id,
+                    "seed": args.seed,
+                    "env_steps": global_step,
+                    "gradient_updates": gradient_updates,
+                    "wall_clock_sec": time.time() - start_time,
+                    "eval_return_mean": eval_mean,
+                    "eval_return_std": eval_std,
+                }
+                eval_metrics.update(base_metadata(args, "ppo"))
+                write_metric(metrics_path, eval_metrics, wandb_run)
                 last_eval_step = global_step
 
             if global_step - last_save_step >= args.save_interval or global_step == args.total_timesteps:
@@ -434,7 +527,7 @@ def main() -> None:
         y_pred = b_values.detach().cpu().numpy()
         y_true = b_returns.detach().cpu().numpy()
         train_metrics = {
-            "algorithm": "ppo",
+            "algorithm": algo,
             "env": args.env_id,
             "seed": args.seed,
             "env_steps": global_step,
@@ -453,13 +546,9 @@ def main() -> None:
             "ppo_old_approx_kl": float(old_approx_kl.item()),
             "ppo_grad_norm": grad_norm_value,
             "actor_value_lr": optimizer.param_groups[0]["lr"],
-            "phase": "ppo",
-            "switched": False,
-            "switch_step": None,
-            "switch_reason": None,
-            "trigger_value": None,
             "ppo_time_limit_bootstrap": False,
         }
+        train_metrics.update(base_metadata(args, "ppo"))
         write_metric(metrics_path, train_metrics, wandb_run)
         finite_values = [v for v in train_metrics.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
         if not np.isfinite(finite_values).all():
