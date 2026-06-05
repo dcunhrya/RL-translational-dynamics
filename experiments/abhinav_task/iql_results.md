@@ -36,6 +36,18 @@ Offline IQL pretrain checkpoints:
 | Walker2d-v4 | IQL -> SAC | 5 | 4384.95 [3940.94, 4921.42] | 2125.53 [1876.07, 2338.78] | 3701.90 | 0 |
 | Walker2d-v4 | IQL -> SAC -> PPO | 5 | 405.48 [330.52, 483.76] | 624.28 [541.48, 756.48] | 275.24 | 0 |
 
+## High-Quality Figures
+
+The new tracked figure set is in `experiments/abhinav_task/figures/`, with both PNG and PDF versions for report/poster use.
+
+- Learning curves: [figures/iql_learning_curves.png](figures/iql_learning_curves.png)
+- Final return and AUC summary: [figures/iql_final_auc_summary.png](figures/iql_final_auc_summary.png)
+- PPO-phase retention diagnostic: [figures/iql_sac_ppo_retention.png](figures/iql_sac_ppo_retention.png)
+
+The learning curves make the phase effect clear. `IQL -> SAC` uses the online budget most effectively after the offline warm start, reaching final returns of 2617.85 on Hopper-v4 and 4384.95 on Walker2d-v4. `IQL -> PPO` is stable but low-return, ending near 503.17 on Hopper-v4 and 410.80 on Walker2d-v4.
+
+The retention diagnostic shows why the three-phase `IQL -> SAC -> PPO` schedule is not yet a strong final method. Before the PPO handoff, the SAC phase reaches useful policies, especially on Hopper-v4. After the PPO phase, mean return drops from 2812 to 434 on Hopper-v4 and from 2441 to 405 on Walker2d-v4. This supports a phase-based interpretation: the SAC phase is productive, but the current PPO refinement mechanism does not preserve the SAC policy.
+
 ## Interpretation
 
 The strongest IQL transfer schedule in this sweep is `IQL -> SAC`. It reaches high final return on both environments and has strong AUC, especially on Walker2d-v4. This is consistent with the phase-based hypothesis: IQL gives SAC a competent non-random actor initialization, then SAC uses the online budget effectively.
@@ -55,6 +67,10 @@ Compared with the earlier BC/AWAC warm-start runs, IQL is competitive with other
 
 ## Artifacts
 
+- Tracked plotting script: `experiments/abhinav_task/plot_iql_results.py`
+- Tracked learning curves: `experiments/abhinav_task/figures/iql_learning_curves.{png,pdf}`
+- Tracked aggregate summary: `experiments/abhinav_task/figures/iql_final_auc_summary.{png,pdf}`
+- Tracked retention diagnostic: `experiments/abhinav_task/figures/iql_sac_ppo_retention.{png,pdf}`
 - Summary JSON: `results/processed/abhinav_task_iql_local/summary.json`
 - Learning curves: `results/processed/abhinav_task_iql_local/phase_marked_learning_curves.png`
 - Policy retention plot: `results/processed/abhinav_task_iql_local/policy_retention.png`
